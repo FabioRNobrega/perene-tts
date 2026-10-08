@@ -11,7 +11,7 @@
         }
         @if (Studio.Job?.Status == "completed")
         {
-            <div class="player" @key="Studio.Job.JobId"><audio controls preload="metadata" src="@($"/audio/{Studio.Job.JobId}")"></audio><a class="button secondary" href="@($"/audio/{Studio.Job.JobId}?download=1")" download><i class="bi bi-download" aria-hidden="true"></i> Download MP3</a></div>
+            <div class="player" @key="Studio.Job.JobId"><AudioPlayer Src="@($"/audio/{Studio.Job.JobId}")" /><a class="button secondary" href="@($"/audio/{Studio.Job.JobId}?download=1")" download><i class="bi bi-download" aria-hidden="true"></i> Download MP3</a></div>
         }
     </section>
 }

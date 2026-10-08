@@ -2,7 +2,7 @@
 @inherits StudioComponent
 @inject NavigationManager Navigation
 <PageTitle>My creations · PereneTTS</PageTitle>
-<header class="page-header"><div><span class="eyebrow">VOICE STUDIO</span><h1>My creations</h1><p>Your saved voices and audio, ready to hear again.</p></div><button class="button secondary" @onclick="Studio.Refresh"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Refresh</button></header>
+<header class="page-header"><h1>My creations</h1><button class="button secondary" @onclick="Studio.Refresh"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Refresh</button></header>
 <div class="library-toolbar"><div class="tabs" role="group" aria-label="Creation type"><button class="@(showVoices ? "" : "active")" @onclick="() => showVoices = false" aria-pressed="@(!showVoices)"><i class="bi bi-collection-play" aria-hidden="true"></i> Audio <span>@Studio.Creations.Count</span></button><button class="@(showVoices ? "active" : "")" @onclick="() => showVoices = true" aria-pressed="@showVoices"><i class="bi bi-mic" aria-hidden="true"></i> Voices <span>@Studio.Voices.Count</span></button></div><input class="search" aria-label="Search creations" placeholder="Search your creations…" @bind="search" @bind:event="oninput" /></div>
 @if (showVoices)
 {
@@ -16,7 +16,7 @@ else
 {
     <div class="creation-grid">@foreach (var creation in Studio.Creations.Where(creation => Matches(creation.VoiceName, creation.Text, StudioSession.LanguageName(creation.LanguageId))))
     {
-        <article class="card creation-card" @key="creation.JobId"><div class="card-heading"><i class="bi @(creation.Kind == "preview" ? "bi-mic" : "bi-soundwave")" aria-hidden="true"></i><h2>@creation.VoiceName</h2><span class="badge">@(creation.Kind == "preview" ? "Voice test" : "Audio")</span></div><p class="creation-meta">@StudioSession.LanguageName(creation.LanguageId) · @creation.CreatedAt.UtcDateTime.ToString("dd MMM yyyy · HH:mm") UTC</p><p class="creation-text">@(string.IsNullOrEmpty(creation.Text) ? "Saved audio from an earlier session." : creation.Text)</p><audio controls preload="none" src="@($"/audio/{creation.JobId}")"></audio><a class="download" href="@($"/audio/{creation.JobId}?download=1")" download><i class="bi bi-download" aria-hidden="true"></i> Download MP3</a></article>
+        <article class="card creation-card" @key="creation.JobId"><div class="card-heading"><i class="bi @(creation.Kind == "preview" ? "bi-mic" : "bi-soundwave")" aria-hidden="true"></i><h2>@creation.VoiceName</h2><span class="badge">@(creation.Kind == "preview" ? "Voice test" : "Audio")</span></div><p class="creation-meta">@StudioSession.LanguageName(creation.LanguageId) · @creation.CreatedAt.UtcDateTime.ToString("dd MMM yyyy · HH:mm") UTC</p><p class="creation-text">@(string.IsNullOrEmpty(creation.Text) ? "Saved audio from an earlier session." : creation.Text)</p><AudioPlayer Src="@($"/audio/{creation.JobId}")" Preload="none" /><a class="download" href="@($"/audio/{creation.JobId}?download=1")" download><i class="bi bi-download" aria-hidden="true"></i> Download MP3</a></article>
     }</div>
     @if (!Studio.Creations.Any(creation => Matches(creation.VoiceName, creation.Text, StudioSession.LanguageName(creation.LanguageId)))) { <div class="empty-state card"><i class="bi bi-collection-play" aria-hidden="true"></i><h2>No audio found</h2><p>Your voice tests and generated audio will appear here. Try another search or create something new.</p><a class="button secondary" href="generate-audio">Generate audio</a></div> }
 }

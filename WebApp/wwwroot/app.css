@@ -34,7 +34,23 @@
     color-scheme:light
 }
 * {
-    box-sizing:border-box
+    box-sizing:border-box;
+    scrollbar-color:var(--brand-gold) var(--bg-elevated)
+}
+*::-webkit-scrollbar {
+    width:10px;
+    height:10px
+}
+*::-webkit-scrollbar-track {
+    background:var(--bg-elevated)
+}
+*::-webkit-scrollbar-thumb {
+    background-color:var(--primary);
+    border-radius:8px;
+    border:2px solid var(--bg-elevated)
+}
+*::-webkit-scrollbar-thumb:hover {
+    background-color:#9D7527
 }
 body {
     margin:0;
@@ -64,7 +80,7 @@ p {
     margin:0 0 16px
 }
 a {
-    color:var(--brand-blue)
+    color:var(--brand-gold)
 }
 button,input,textarea,select {
     font:inherit
@@ -161,13 +177,36 @@ button .bi {
     justify-content:space-between;
     gap:8px
 }
-.theme-toggle {
+.theme-switch {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin:0;
+    cursor:pointer;
+    color:var(--primary)
+}
+.theme-switch input {
+    appearance:none;
+    width:2em;
+    height:1em;
+    padding:0;
+    margin:0;
+    flex-shrink:0;
+    cursor:pointer;
     border:1px solid var(--border-strong);
-    color:var(--brand-gold);
-    background:transparent;
-    border-radius:6px;
-    width:34px;
-    height:32px
+    border-radius:2em;
+    background:var(--bg-elevated) url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='rgba%28255,255,255,0.25%29'/%3e%3c/svg%3e") left center/contain no-repeat;
+    transition:background-position .15s ease-in-out
+}
+.app-shell.light .theme-switch input {
+    border-color:var(--primary);
+    background-image:url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23B98A2E'/%3e%3c/svg%3e")
+}
+.theme-switch input:checked {
+    border-color:var(--primary);
+    background-color:var(--primary);
+    background-image:url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23fff'/%3e%3c/svg%3e");
+    background-position:right center
 }
 .engine-status {
     display:flex;
@@ -200,19 +239,11 @@ button .bi {
     justify-content:space-between;
     align-items:center;
     gap:20px;
-    border-bottom:1px solid var(--border);
-    padding-bottom:24px;
     margin-bottom:24px
 }
-.page-header p {
-    margin:0;
-    color:var(--text-muted)
-}
-.eyebrow {
-    font-size:.68rem;
-    letter-spacing:.12em;
-    color:var(--brand-gold);
-    font-weight:600
+.page-header h1 {
+    font-size:1.75rem;
+    margin:0
 }
 .badge {
     display:inline-flex;
@@ -429,9 +460,98 @@ audio {
     height:44px;
     border-radius:5px
 }
-.player audio {
+.audio-player {
+    --track:.4rem;
     flex:1;
-    min-width:200px
+    min-width:260px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:8px 12px;
+    background:var(--bg-app);
+    border:1px solid var(--border);
+    border-radius:6px
+}
+.audio-player audio {
+    display:none
+}
+.player-button {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    flex-shrink:0;
+    width:36px;
+    height:36px;
+    padding:0;
+    border:1px solid var(--primary);
+    border-radius:6px;
+    background:transparent;
+    color:var(--primary)
+}
+.player-button:hover,.player-button.active,.audio-player.is-playing [data-action="play"] {
+    background:var(--primary);
+    color:#16211B
+}
+.time-readout {
+    font-size:.75rem;
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+    color:var(--text-body)
+}
+.audio-player input[type=range] {
+    appearance:none;
+    height:20px;
+    padding:0;
+    margin:0;
+    border:0;
+    background:transparent;
+    cursor:pointer
+}
+.audio-player input[type=range]:disabled {
+    cursor:not-allowed;
+    opacity:.55
+}
+.audio-player .timeline {
+    flex:1;
+    min-width:60px
+}
+.audio-player .volume {
+    --track:.3rem;
+    flex:0 0 80px;
+    width:80px
+}
+.audio-player input[type=range]::-webkit-slider-runnable-track {
+    height:var(--track);
+    border-radius:999px;
+    background:linear-gradient(to right,var(--primary) var(--progress,0%),var(--border-strong) var(--progress,0%))
+}
+.audio-player input[type=range]::-moz-range-track {
+    height:var(--track);
+    border-radius:999px;
+    background:var(--border-strong)
+}
+.audio-player input[type=range]::-moz-range-progress {
+    height:var(--track);
+    border-radius:999px;
+    background:var(--primary)
+}
+.audio-player input[type=range]::-webkit-slider-thumb {
+    appearance:none;
+    box-sizing:border-box;
+    width:14px;
+    height:14px;
+    margin-top:calc((var(--track) - 14px) / 2);
+    border-radius:50%;
+    border:2px solid rgba(255,255,255,.72);
+    background:var(--primary)
+}
+.audio-player input[type=range]::-moz-range-thumb {
+    box-sizing:border-box;
+    width:14px;
+    height:14px;
+    border-radius:50%;
+    border:2px solid rgba(255,255,255,.72);
+    background:var(--primary)
 }
 .library-toolbar {
     display:flex;
@@ -480,8 +600,7 @@ audio {
     grid-template-columns:repeat(2,minmax(0,1fr));
     gap:16px
 }
-.creation-card audio {
-    width:100%;
+.creation-card .audio-player {
     margin:14px 0
 }
 .creation-meta {
@@ -574,9 +693,6 @@ audio {
     .support-cards {
         grid-template-columns:repeat(2,minmax(0,1fr))
     }
-    .page-header>.badge {
-        display:none
-    }
     .creation-grid {
         grid-template-columns:minmax(0,1fr)
     }
@@ -641,16 +757,11 @@ audio {
         overflow:visible
     }
     .page-header {
-        align-items:flex-start;
         gap:10px;
-        padding-bottom:18px;
         margin-bottom:18px
     }
     .page-header h1 {
-        font-size:1.7rem
-    }
-    .page-header p {
-        font-size:.8rem
+        font-size:1.5rem
     }
     .page-header>.button {
         padding:7px 9px;
@@ -694,10 +805,15 @@ audio {
     .player {
         gap:12px
     }
-    .player audio {
+    .audio-player {
         width:100%;
         min-width:0;
-        flex:auto
+        flex:auto;
+        gap:8px;
+        padding:6px 8px
+    }
+    .audio-player .volume {
+        display:none
     }
     .output {
         margin-top:16px

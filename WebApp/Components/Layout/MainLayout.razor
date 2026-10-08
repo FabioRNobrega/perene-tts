@@ -12,7 +12,7 @@
             <NavLink href="creations"><i class="bi bi-collection-play" aria-hidden="true"></i><span>My creations</span></NavLink>
         </nav>
         <div class="sidebar-footer">
-            <div class="privacy"><span><i class="bi bi-shield-lock" aria-hidden="true"></i> Private · local only</span><button class="theme-toggle" @onclick="() => light = !light" aria-label="Toggle light or dark appearance" aria-pressed="@light"><i class="bi @(light ? "bi-sun" : "bi-moon-stars")" aria-hidden="true"></i></button></div>
+            <div class="privacy"><span><i class="bi bi-shield-lock" aria-hidden="true"></i> Private · local only</span><label class="theme-switch" title="@(light ? "Switch to dark mode" : "Switch to light mode")"><input type="checkbox" role="switch" checked="@(!light)" @onchange="() => light = !light" aria-label="@(light ? "Switch to dark mode" : "Switch to light mode")" /><i class="bi @(light ? "bi-sun-fill" : "bi-moon-stars-fill")" aria-hidden="true"></i></label></div>
             <div class="engine-status" role="status"><span class="dot @(Studio.Health?.ModelReady == true ? "ready" : "")"></span><span>@Studio.HealthText</span></div>
             <small>Copyright © @DateTime.UtcNow.Year PereneTech.</small>
         </div>
