@@ -2,27 +2,112 @@
 @inherits StudioComponent
 @inject NavigationManager Navigation
 <PageTitle>My creations · PereneTTS</PageTitle>
-<header class="page-header"><h1>My creations</h1><button class="button secondary" @onclick="Studio.Refresh"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Refresh</button></header>
-<div class="library-toolbar"><div class="tabs" role="group" aria-label="Creation type"><button class="@(showVoices ? "" : "active")" @onclick="() => showVoices = false" aria-pressed="@(!showVoices)"><i class="bi bi-collection-play" aria-hidden="true"></i> Audio <span>@Studio.Creations.Count</span></button><button class="@(showVoices ? "active" : "")" @onclick="() => showVoices = true" aria-pressed="@showVoices"><i class="bi bi-mic" aria-hidden="true"></i> Voices <span>@Studio.Voices.Count</span></button></div><input class="search" aria-label="Search creations" placeholder="Search your creations…" @bind="search" @bind:event="oninput" /></div>
+<header class="page-header"><div><h1>My creations</h1><p class="page-summary">@Studio.Creations.Count audio file@(Studio.Creations.Count == 1 ? "" : "s") · @Studio.Voices.Count saved voice@(Studio.Voices.Count == 1 ? "" : "s")</p></div><button class="button secondary" @onclick="Studio.Refresh"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Refresh</button></header>
+<div class="library-toolbar">
+    <div class="filter-group" role="group" aria-label="Creation type">
+        <button class="@(showVoices ? "" : "active")" @onclick="() => SetTab(false)" aria-pressed="@(!showVoices)"><i class="bi bi-collection-play" aria-hidden="true"></i> Audio <span>@Studio.Creations.Count</span></button>
+        <button class="@(showVoices ? "active" : "")" @onclick="() => SetTab(true)" aria-pressed="@showVoices"><i class="bi bi-mic" aria-hidden="true"></i> Voices <span>@Studio.Voices.Count</span></button>
+    </div>
+    <input class="search" aria-label="Search creations" placeholder="Search your creations…" @bind="search" @bind:event="oninput" @bind:after="() => pageNumber = 1" />
+</div>
 @if (showVoices)
 {
-    <div class="creation-grid">@foreach (var voice in Studio.Voices.Where(voice => Matches(voice.Name, StudioSession.LanguageName(voice.LanguageId))))
+    var voices = Studio.Voices.Where(voice => Matches(voice.Name, StudioSession.LanguageName(voice.LanguageId))).ToList();
+    @if (voices.Count == 0)
     {
-        <article class="card voice-card" @key="voice.VoiceId"><div class="card-heading"><i class="bi bi-mic" aria-hidden="true"></i><h2>@voice.Name</h2></div><span class="badge">@StudioSession.LanguageName(voice.LanguageId)</span><p class="hint">Saved voice</p><button class="button secondary" @onclick="() => UseVoice(voice.VoiceId)">Use this voice <i class="bi bi-arrow-right" aria-hidden="true"></i></button></article>
-    }</div>
-    @if (!Studio.Voices.Any(voice => Matches(voice.Name, StudioSession.LanguageName(voice.LanguageId)))) { <div class="empty-state card"><i class="bi bi-mic" aria-hidden="true"></i><h2>No voices found</h2><p>Create a voice or try another search.</p><a class="button secondary" href="/">Create a voice</a></div> }
+        <div class="empty-state card"><i class="bi bi-mic" aria-hidden="true"></i><h2>No voices found</h2><p>Create a voice or try another search.</p><a class="button secondary" href="/">Create a voice</a></div>
+    }
+    else
+    {
+        <ul class="job-list">@foreach (var voice in Paged(voices))
+        {
+            <li class="job-item" @key="voice.VoiceId"><div class="job-row voice-row">
+                <span class="job-type"><i class="bi bi-mic" aria-hidden="true"></i> Voice</span>
+                <div class="job-info"><strong title="@voice.Name">@voice.Name</strong><small>@StudioSession.LanguageName(voice.LanguageId)</small></div>
+                <div class="job-actions"><button class="button secondary" @onclick="() => UseVoice(voice.VoiceId)">Use this voice <i class="bi bi-arrow-right" aria-hidden="true"></i></button></div>
+            </div></li>
+        }</ul>
+        @Pager(voices.Count)
+    }
 }
 else
 {
-    <div class="creation-grid">@foreach (var creation in Studio.Creations.Where(creation => Matches(creation.VoiceName, creation.Text, StudioSession.LanguageName(creation.LanguageId))))
+    var creations = Studio.Creations.Where(creation => Matches(creation.VoiceName, creation.Text, StudioSession.LanguageName(creation.LanguageId))).ToList();
+    @if (creations.Count == 0)
     {
-        <article class="card creation-card" @key="creation.JobId"><div class="card-heading"><i class="bi @(creation.Kind == "preview" ? "bi-mic" : "bi-soundwave")" aria-hidden="true"></i><h2>@creation.VoiceName</h2><span class="badge">@(creation.Kind == "preview" ? "Voice test" : "Audio")</span></div><p class="creation-meta">@StudioSession.LanguageName(creation.LanguageId) · @creation.CreatedAt.UtcDateTime.ToString("dd MMM yyyy · HH:mm") UTC</p><p class="creation-text">@(string.IsNullOrEmpty(creation.Text) ? "Saved audio from an earlier session." : creation.Text)</p><AudioPlayer Src="@($"/audio/{creation.JobId}")" Preload="none" /><a class="download" href="@($"/audio/{creation.JobId}?download=1")" download><i class="bi bi-download" aria-hidden="true"></i> Download MP3</a></article>
-    }</div>
-    @if (!Studio.Creations.Any(creation => Matches(creation.VoiceName, creation.Text, StudioSession.LanguageName(creation.LanguageId)))) { <div class="empty-state card"><i class="bi bi-collection-play" aria-hidden="true"></i><h2>No audio found</h2><p>Your voice tests and generated audio will appear here. Try another search or create something new.</p><a class="button secondary" href="generate-audio">Generate audio</a></div> }
+        <div class="empty-state card"><i class="bi bi-collection-play" aria-hidden="true"></i><h2>No audio found</h2><p>Your voice tests and generated audio will appear here. Try another search or create something new.</p><a class="button secondary" href="generate-audio">Generate audio</a></div>
+    }
+    else
+    {
+        <ul class="job-list">@foreach (var creation in Paged(creations))
+        {
+            var open = expanded.Contains(creation.JobId);
+            var detailsId = $"creation-details-{creation.JobId}";
+            <li class="job-item" @key="creation.JobId">
+                <div class="job-row">
+                    <span class="job-type"><i class="bi @(creation.Kind == "preview" ? "bi-mic" : "bi-soundwave")" aria-hidden="true"></i> @(creation.Kind == "preview" ? "Voice test" : "Audio")</span>
+                    <div class="job-info"><strong title="@creation.VoiceName">@creation.VoiceName</strong><small>@StudioSession.LanguageName(creation.LanguageId) · @Created(creation)</small></div>
+                    <AudioPlayer Src="@($"/audio/{creation.JobId}")" Preload="none" />
+                    <div class="job-actions">
+                        <a class="button secondary icon-button" href="@($"/audio/{creation.JobId}?download=1")" download title="Download MP3" aria-label="Download MP3 of @creation.VoiceName"><i class="bi bi-download" aria-hidden="true"></i></a>
+                        <button class="button secondary icon-button" title="@(open ? "Hide details" : "Show details")" aria-label="@(open ? "Hide" : "Show") details for @creation.VoiceName" aria-expanded="@(open ? "true" : "false")" aria-controls="@detailsId" @onclick="() => Toggle(creation.JobId)"><i class="bi @(open ? "bi-chevron-up" : "bi-chevron-down")" aria-hidden="true"></i></button>
+                    </div>
+                </div>
+                @if (open)
+                {
+                    <dl class="job-details" id="@detailsId">
+                        <dt>Voice</dt><dd>@creation.VoiceName</dd>
+                        <dt>Language</dt><dd>@StudioSession.LanguageName(creation.LanguageId)</dd>
+                        <dt>Created</dt><dd>@Created(creation)</dd>
+                        <dt>Text</dt><dd class="creation-text">@(string.IsNullOrEmpty(creation.Text) ? "Saved audio from an earlier session." : creation.Text)</dd>
+                    </dl>
+                }
+            </li>
+        }</ul>
+        @Pager(creations.Count)
+    }
 }
 @code {
+    private static readonly int[] PageSizes = [5, 10, 25, 50];
+    private readonly HashSet<string> expanded = new(StringComparer.Ordinal);
     private bool showVoices;
     private string search = "";
+    private int pageNumber = 1, pageSize = 10;
     private bool Matches(params string[] values) => values.Any(value => value.Contains(search.Trim(), StringComparison.OrdinalIgnoreCase));
     private void UseVoice(string id) { Studio.SelectedVoice = id; Navigation.NavigateTo("generate-audio"); }
+    private void SetTab(bool voices) { showVoices = voices; pageNumber = 1; }
+    private void Toggle(string id) { if (!expanded.Remove(id)) expanded.Add(id); }
+    private static string Created(Creation creation) => creation.CreatedAt.UtcDateTime.ToString("dd MMM yyyy · HH:mm") + " UTC";
+    private int PageCount(int total) => Math.Max(1, (total + pageSize - 1) / pageSize);
+
+    // Clamp here so a refresh or search that shrinks the list never leaves an empty page selected.
+    private IEnumerable<T> Paged<T>(List<T> items)
+    {
+        pageNumber = Math.Clamp(pageNumber, 1, PageCount(items.Count));
+        return items.Skip((pageNumber - 1) * pageSize).Take(pageSize);
+    }
+
+    private RenderFragment Pager(int total) => __builder =>
+    {
+        if (total <= PageSizes[0]) return;
+        var count = PageCount(total);
+        var start = Math.Clamp(pageNumber - 2, 1, Math.Max(1, count - 4));
+        <nav class="pager" aria-label="Creation pages">
+            @if (count > 1)
+            {
+                <ul class="pagination">
+                    <li><button aria-label="Previous page" disabled="@(pageNumber == 1)" @onclick="() => pageNumber--"><i class="bi bi-chevron-left" aria-hidden="true"></i></button></li>
+                    @foreach (var number in Enumerable.Range(start, Math.Min(5, count)))
+                    {
+                        <li><button class="@(number == pageNumber ? "active" : null)" aria-label="Page @number" aria-current="@(number == pageNumber ? "page" : null)" @onclick="() => pageNumber = number">@number</button></li>
+                    }
+                    <li><button aria-label="Next page" disabled="@(pageNumber == count)" @onclick="() => pageNumber++"><i class="bi bi-chevron-right" aria-hidden="true"></i></button></li>
+                </ul>
+            }
+            <label class="page-size">Per page <select value="@pageSize" @onchange="SetPageSize">@foreach (var size in PageSizes) { <option value="@size" selected="@(size == pageSize)">@size</option> }</select></label>
+            <small>@((pageNumber - 1) * pageSize + 1)–@(Math.Min(pageNumber * pageSize, total)) of @total</small>
+        </nav>
+    };
+
+    private void SetPageSize(ChangeEventArgs args) { pageSize = int.TryParse(args.Value?.ToString(), out var size) && PageSizes.Contains(size) ? size : 10; pageNumber = 1; }
 }
