@@ -1,13 +1,13 @@
 @page "/"
 @inherits StudioComponent
 <PageTitle>Create a voice · PereneTTS</PageTitle>
-<header class="page-header"><div><span class="eyebrow">VOICE STUDIO</span><h1>Create a voice</h1><p>Give your voice a name and start with a clear MP3 recording.</p></div><span class="badge"><i class="bi bi-mic" aria-hidden="true"></i> Voice creation</span></header>
+<header class="page-header"><div><span class="eyebrow">VOICE STUDIO</span><h1>Create a voice</h1><p>Give your voice a name and start with a clear MP3 or WAV recording.</p></div><span class="badge"><i class="bi bi-mic" aria-hidden="true"></i> Voice creation</span></header>
 <div class="workspace">
     <section class="card">
         <div class="card-heading"><i class="bi bi-mic" aria-hidden="true"></i><h2>Voice details</h2></div>
         <label for="voice-name">Voice name</label><input id="voice-name" @bind="name" maxlength="80" placeholder="e.g. My reading voice" disabled="@Studio.Busy" />
         <label for="language">Recording language</label><select id="language" @bind="language" disabled="@Studio.Busy"><option value="en">English</option><option value="pt">Português</option><option value="sv">Svenska</option></select>
-        <div class="upload"><i class="bi bi-cloud-arrow-up" aria-hidden="true"></i><label for="reference">Choose your MP3 recording</label><InputFile id="reference" OnChange="ChooseFile" accept=".mp3,audio/mpeg" disabled="@Studio.Busy" /><small>@(file?.Name ?? "3–60 seconds · up to 20 MiB")</small></div>
+        <div class="upload"><i class="bi bi-cloud-arrow-up" aria-hidden="true"></i><label for="reference">Choose your MP3 or WAV recording</label><InputFile id="reference" OnChange="ChooseFile" accept=".mp3,.wav,audio/mpeg,audio/wav" disabled="@Studio.Busy" /><small>@(file?.Name ?? "3–60 seconds · up to 20 MiB")</small></div>
         <button class="primary" @onclick="CreateVoice" disabled="@(Studio.Busy || Studio.Health?.ModelReady != true || file is null || string.IsNullOrWhiteSpace(name))"><i class="bi bi-mic" aria-hidden="true"></i> Create voice &amp; hear sample</button>
     </section>
     <div class="support-cards">
@@ -21,8 +21,10 @@
     private void ChooseFile(InputFileChangeEventArgs args)
     {
         file = null;
-        if (!args.File.Name.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) || args.File.Size > 20 * 1024 * 1024 || args.File.Size == 0)
-            Studio.SetError("Choose a nonempty MP3 recording up to 20 MiB.");
+        var extension = Path.GetExtension(args.File.Name);
+        if (!(extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase) || extension.Equals(".wav", StringComparison.OrdinalIgnoreCase))
+            || args.File.Size > 20 * 1024 * 1024 || args.File.Size == 0)
+            Studio.SetError("Choose a nonempty MP3 or WAV recording up to 20 MiB.");
         else { file = args.File; Studio.SetError(null); }
     }
     private async Task CreateVoice()
@@ -31,9 +33,9 @@
         try
         {
             await using var stream = file.OpenReadStream(20 * 1024 * 1024);
-            await Studio.CreateVoice(stream, name.Trim(), language);
+            await Studio.CreateVoice(stream, Path.GetExtension(file.Name).ToLowerInvariant(), name.Trim(), language);
         }
         catch (Exception error) when (error is IOException or InvalidOperationException)
-        { Studio.SetError("The recording could not be read. Choose your MP3 again."); }
+        { Studio.SetError("The recording could not be read. Choose your recording again."); }
     }
 }

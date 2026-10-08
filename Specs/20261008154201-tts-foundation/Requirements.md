@@ -12,14 +12,14 @@
 The existing `book-notes-ia/services/ChatterboxTtsService` is a Python CPU proof of concept with fixed WAV reference slots and predefined text. It lacks browser uploads, named voices, arbitrary text synthesis, MP3 delivery, and a standalone Blazor frontend. The empty `perene-tts` directory needs an independent application grounded in that service and the .NET 10 Blazor/card styling conventions of `perene-archive`.
 
 ## User Stories
-- Given an MP3 reference, when I name a voice and select English, Portuguese, or Swedish, then the application saves it and generates a predefined sample.
+- Given an MP3 or WAV reference, when I name a voice and select English, Portuguese, or Swedish, then the application saves it and generates a predefined sample.
 - Given a saved voice, when I enter text, then I can play and download generated MP3 audio.
 - Given saved voices, when Docker restarts, then they remain available.
 - Given an Apple Silicon Mac, when I use the native worker mode, then inference selects MPS when available.
 
 ## Functional Requirements
 1. FR1 — Provide a .NET 10 Interactive Server Blazor application with separate responsive voice-creation, text-generation, and creation-library pages, using the PereneArchive sidebar and Perene design-guide typography/colors.
-2. FR2 — Accept bounded MP3 references, a name, and one of `en`, `pt`, or `sv`; validate decoded audio before creating a voice.
+2. FR2 — Accept bounded MP3 or WAV references, a name, and one of `en`, `pt`, or `sv`; validate decoded audio before creating a voice.
 3. FR3 — Archive named voices, reference recordings, and compatible conditioning permanently; identical decoded references in the same language reuse the existing identity.
 4. FR4 — Generate a fixed, language-specific preview after successful voice preparation.
 5. FR5 — Generate speech from bounded user text using a selected voice in its saved language.

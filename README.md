@@ -1,6 +1,6 @@
 # PereneTTS
 
-A small local voice studio: upload an MP3 to preserve a named voice, hear a predefined sample, then generate new speech in English, Portuguese, or Swedish. The frontend is a .NET 10 Blazor Interactive Server application; a separate Python/FastAPI worker runs Chatterbox Multilingual V3. Generated audio can be played and downloaded as MP3. The PereneArchive-style sidebar separates **Create a voice**, **Generate audio**, and **My creations**. Montserrat, Zilla Slab, and Bootstrap Icons are bundled locally; forest-green dark mode and cream light mode follow the Perene design guide.
+A small local voice studio: upload an MP3 or WAV recording to preserve a named voice, hear a predefined sample, then generate new speech in English, Portuguese, or Swedish. The frontend is a .NET 10 Blazor Interactive Server application; a separate Python/FastAPI worker runs Chatterbox Multilingual V3. Generated audio can be played and downloaded as MP3. The PereneArchive-style sidebar separates **Create a voice**, **Generate audio**, and **My creations**. Montserrat, Zilla Slab, and Bootstrap Icons are bundled locally; forest-green dark mode and cream light mode follow the Perene design guide.
 
 ## Start with Docker
 
@@ -27,7 +27,7 @@ Use `make dotnet ARGS="build"` for an explicit SDK build. `make test` runs the w
 ## Use the studio
 
 1. Choose a voice name and recording language: English, Português, or Svenska.
-2. Upload a spoken MP3 lasting **3–60 seconds**, no larger than **20 MiB**. A clear recording with one speaker works best. Click **Create voice & hear sample**.
+2. Upload a spoken MP3 or WAV recording lasting **3–60 seconds**, no larger than **20 MiB**. A clear recording with one speaker works best. Click **Create voice & hear sample**.
 3. Wait for the voice preparation and predefined preview; play it or download the MP3.
 4. Open **Generate audio**, select a saved voice, enter up to **5,000 characters** in its language, and click **Generate audio**.
 5. Open **My creations** to search and play/download saved audio, or switch to the **Voices** tab to reuse a voice. Completed audio remains listed after restarts. You can navigate between pages during generation.
@@ -122,7 +122,7 @@ The ASP.NET Data Protection “No XML encryptor configured” line is a warning 
 
 - **Loading or model error:** inspect `make docker-logs`. First start requires access to Hugging Face; cached weights are reused on subsequent starts. The worker retries failed model loads automatically after 15 seconds, then 30 seconds, then every 60 seconds until ready or stopped.
 - **Busy:** wait for the active operation to finish before submitting another one.
-- **Invalid recording:** choose a readable, non-silent MP3 with 3–60 seconds of speech.
+- **Invalid recording:** choose a readable, non-silent MP3 or WAV with 3–60 seconds of speech.
 - **Worker unavailable:** ensure the worker is running. In Mac mode start `make mac-worker` before `make mac-up`.
 - **Docker socket access on Steam Deck:** ensure the current user can access the Docker/Podman socket.
 

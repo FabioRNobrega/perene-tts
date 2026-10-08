@@ -74,9 +74,21 @@ def wait(client, job):
     pytest.fail("Job did not finish")
 
 
-def create(client, content, language="en", name="Reading voice"):
+def create(client, content, language="en", name="Reading voice", filename="reference.mp3"):
     return client.post("/voices", data={"name": name, "language": language},
-                       files={"audio": ("reference.mp3", content, "audio/mpeg")})
+                       files={"audio": (filename, content, "application/octet-stream")})
+
+
+def test_wav_reference_creates_voice(environment, tmp_path):
+    client, studio, engine = environment
+    wav = tmp_path / "source.wav"
+    write_wav(wav, 3.5, 1000)
+    preview = wait(client, create(client, wav.read_bytes(), filename="Reference.WAV").json())
+    assert preview["status"] == "completed", preview
+    assert engine.calls[-1] == ("en", PREVIEWS["en"])
+    assert client.get(preview["audio_url"]).headers["content-type"] == "audio/mpeg"
+    assert client.get("/voices").json()[0]["voice_id"] == preview["voice_id"]
+    assert not list((studio.root / "uploads").iterdir())
 
 
 @pytest.mark.parametrize("language", ["en", "pt", "sv"])
@@ -135,8 +147,10 @@ def test_input_validation(environment, tmp_path):
     assert create(client, b"").status_code == 422
     assert create(client, b"x" * (MAX_UPLOAD + 1)).status_code == 413
     assert client.post("/voices", data={"name": "a", "language": "en"}, files={"audio": ("x.pt", b"x")}).status_code == 422
-    malformed = wait(client, create(client, b"not an MP3").json())
-    assert malformed["status"] == "failed"
+    assert create(client, b"anything", filename="reference.ogg").status_code == 422
+    for filename in ("reference.mp3", "reference.wav"):
+        malformed = wait(client, create(client, b"not audio", filename=filename).json())
+        assert malformed["status"] == "failed"
     for text in (" ", "x" * 5001):
         assert client.post("/speech", json={"voice_id": str(uuid4()), "text": text}).status_code == 422
     assert client.post("/speech", json={"voice_id": str(uuid4()), "text": "Hello"}).status_code == 404

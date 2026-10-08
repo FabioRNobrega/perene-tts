@@ -52,8 +52,8 @@ public sealed class StudioSession(TtsClient client) : IAsyncDisposable
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
     }
-    public Task CreateVoice(Stream stream, string name, string language) =>
-        Run(() => client.CreateVoiceAsync(stream, name, language, lifetime.Token));
+    public Task CreateVoice(Stream stream, string extension, string name, string language) =>
+        Run(() => client.CreateVoiceAsync(stream, extension, name, language, lifetime.Token));
     public Task Generate() => Run(() => client.SpeakAsync(SelectedVoice, SpeechText, lifetime.Token));
     private async Task Run(Func<Task<Job>> start)
     {

@@ -20,6 +20,8 @@ from .voice_store import LocalVoiceStore, VoiceCompatibility
 MODEL_REVISION = "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
 SOURCE_REVISION = "5de7a54aa4e5e2baadb0182dde554908b48b85c2"
 MAX_UPLOAD = 20 * 1024 * 1024
+# Upload extension -> explicit FFmpeg demuxer; never let FFmpeg probe client input.
+REFERENCE_FORMATS = {".mp3": "mp3", ".wav": "wav"}
 MAX_TEXT = 5000
 PREVIEWS = {
     "en": "Hello! Welcome to PereneTTS. This is a quick voice test to hear how natural and clear my voice sounds.",
@@ -61,7 +63,7 @@ def ffmpeg(*arguments: str) -> None:
             check=True, capture_output=True, timeout=120,
         )
     except (subprocess.SubprocessError, OSError) as error:
-        raise ValueError("Audio conversion failed. Use a readable MP3 recording.") from error
+        raise ValueError("Audio conversion failed. Use a readable MP3 or WAV recording.") from error
 
 
 class StudioService:
@@ -186,7 +188,7 @@ class StudioService:
             with tempfile.TemporaryDirectory(dir=self.root / "uploads") as temporary:
                 reference = Path(temporary) / "reference.wav"
                 # protocol whitelist blocks remote playlist fetches; duration cap bounds decoding work.
-                ffmpeg("-protocol_whitelist", "file,pipe", "-f", "mp3", "-i", str(upload),
+                ffmpeg("-protocol_whitelist", "file,pipe", "-f", REFERENCE_FORMATS[upload.suffix], "-i", str(upload),
                        "-t", "61", "-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(reference))
                 validate_reference(reference)
                 duration, _ = pcm_wav_metrics(reference)

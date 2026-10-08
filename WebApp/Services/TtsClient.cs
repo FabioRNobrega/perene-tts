@@ -12,12 +12,13 @@ public sealed class TtsClient(HttpClient http)
         await http.GetFromJsonAsync<List<Voice>>("voices", cancellation) ?? [];
     public async Task<List<Creation>> CreationsAsync(CancellationToken cancellation) =>
         await http.GetFromJsonAsync<List<Creation>>("creations", cancellation) ?? [];
-    public async Task<Job> CreateVoiceAsync(Stream audio, string name, string language, CancellationToken cancellation)
+    public async Task<Job> CreateVoiceAsync(Stream audio, string extension, string name, string language, CancellationToken cancellation)
     {
         using var form = new MultipartFormDataContent();
         form.Add(new StringContent(name), "name");
         form.Add(new StringContent(language), "language");
-        form.Add(new StreamContent(audio), "audio", "reference.mp3");
+        // Only the validated extension is forwarded; the worker selects its decoder from it.
+        form.Add(new StreamContent(audio), "audio", $"reference{extension}");
         using var response = await http.PostAsync("voices", form, cancellation);
         return await ReadJobAsync(response, cancellation);
     }

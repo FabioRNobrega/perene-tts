@@ -33,7 +33,7 @@ Development Compose mounts WebApp source into `/workspace/WebApp` and runs the .
 `app/main.py` owns FastAPI routes and starts a background model load with interruptible 15/30/60-second retry backoff. Docker worker DNS uses configurable explicit resolvers, and its health/API is published only to localhost:5081. `StudioService` owns operation validation, jobs, FFmpeg conversion, voice names, and synthesis orchestration. `LocalVoiceStore` owns UUID-safe directories, checksums, archived references, and conditioning compatibility. `ChatterboxEngine` implements `SynthesisEngine` and owns pinned model/provider calls. A process-level gate serializes accepted operations through conditioning selection and synthesis; run exactly one Uvicorn worker. Latest job statuses are bounded in memory; completed voices/audio persist on disk. `GET /creations` reads completed MP3s and atomic JSON metadata sidecars, newest first; legacy files without metadata remain browsable. Creation metadata is published before the final MP3, so the listing only exposes completed audio files.
 
 ### Voice Creation
-`InputFile` streams a bounded MP3 through `TtsClient` to `POST /voices`. A background job decodes mono PCM through FFmpeg, validates duration/peak, resolves the recording identity, prepares or loads compatible conditioning, saves a name sidecar, synthesizes predefined language text, and atomically publishes an MP3.
+`InputFile` streams a bounded MP3 or WAV reference through `TtsClient` to `POST /voices`. A background job decodes mono PCM through FFmpeg, validates duration/peak, resolves the recording identity, prepares or loads compatible conditioning, saves a name sidecar, synthesizes predefined language text, and atomically publishes an MP3.
 
 ### Text Synthesis
 `GenerateAudio.razor` submits a saved UUID and text to `POST /speech`. StudioService uses the saved voice language, validates/reloads conditioning, chunks text through `chunk_text`, renders PCM, and publishes the job MP3. The browser polls `/jobs/{uuid}` through TtsClient and uses the web audio route on completion.
@@ -61,7 +61,7 @@ Microsoft-stack detection finds `WebApp/WebApp.csproj` using Microsoft.NET.Sdk.W
 
 ## Constraints
 - Keep this foundation local and simple: no login or public hosting is currently implemented.
-- Preserve three allowed languages, 20 MiB uploads, 3–60 second references, 80-character names, and 5,000-character text bounds unless changing the spec.
+- Preserve three allowed languages, MP3/WAV references, 20 MiB uploads, 3–60 second references, 80-character names, and 5,000-character text bounds unless changing the spec.
 - Run one worker process to preserve shared model locking; do not add Uvicorn workers without redesigning orchestration.
 - Never commit recordings, generated speech, model weights, `.venv`, `.env`, or build output.
 - Never accept client-supplied filesystem paths or conditioning `.pt` uploads.

@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .engine import ChatterboxEngine, SynthesisError
-from .studio import BusyError, MAX_UPLOAD, MODEL_REVISION, StudioService
+from .studio import BusyError, MAX_UPLOAD, MODEL_REVISION, REFERENCE_FORMATS, StudioService
 from .voice_store import VoiceStoreError
 
 
@@ -140,10 +140,11 @@ def create_app(studio: StudioService | None = None) -> FastAPI:
 
     @app.post("/voices", status_code=202)
     async def create_voice(name: str = Form(...), language: str = Form(...), audio: UploadFile = File(...)):
-        if not (audio.filename or "").lower().endswith(".mp3"):
+        suffix = Path(audio.filename or "").suffix.lower()
+        if suffix not in REFERENCE_FORMATS:
             await audio.close()
-            raise HTTPException(422, "Please upload an MP3 recording")
-        descriptor, filename = tempfile.mkstemp(suffix=".mp3", dir=app.state.studio.root / "uploads")
+            raise HTTPException(422, "Please upload an MP3 or WAV recording")
+        descriptor, filename = tempfile.mkstemp(suffix=suffix, dir=app.state.studio.root / "uploads")
         path = Path(filename)
         accepted = False
         try:
