@@ -1,0 +1,30 @@
+**/bin/
+**/obj/
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/data/
+**/models/
+.env
+.DS_Store
+.env.*
+!.env.example
+exports/
+
+# Recordings, generated speech, and model weights
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.m4a
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# Editor, OS, and log files
+.vscode/
+.idea/
+*.swp
+*.log
+Thumbs.db

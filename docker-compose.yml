@@ -1,0 +1,60 @@
+name: perene-tts
+services:
+  web:
+    build:
+      context: .
+      target: development
+    working_dir: /workspace/WebApp
+    dns:
+      - "${WEB_DNS_PRIMARY:-1.1.1.1}"
+      - "${WEB_DNS_SECONDARY:-8.8.8.8}"
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8082}:8080"
+    environment:
+      Tts__BaseUrl: http://tts:5081/
+    volumes:
+      - ./WebApp:/workspace/WebApp
+      - web-bin:/workspace/WebApp/bin
+      - web-obj:/workspace/WebApp/obj
+      - web-nuget:/root/.nuget/packages
+      - web-keys:/root/.aspnet/DataProtection-Keys
+    depends_on:
+      tts:
+        condition: service_started
+    restart: unless-stopped
+  tts:
+    ports:
+      - "127.0.0.1:${TTS_PORT:-5081}:5081"
+    dns:
+      - "${TTS_DNS_PRIMARY:-1.1.1.1}"
+      - "${TTS_DNS_SECONDARY:-8.8.8.8}"
+    build:
+      context: ./services/ChatterboxTtsService
+      target: runtime
+    environment:
+      TTS_DEVICE: cpu
+      HF_HOME: /models
+      TTS_DATA_DIR: /data
+    volumes:
+      - tts-data:/data
+      - tts-models:/models
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; d=json.load(urllib.request.urlopen('http://localhost:5081/health')); raise SystemExit(0 if d['model_ready'] else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10m
+      retries: 5
+  tests:
+    profiles: [test]
+    build:
+      context: ./services/ChatterboxTtsService
+      target: test
+    network_mode: none
+volumes:
+  tts-data:
+  tts-models:
+  web-keys:
+  web-bin:
+  web-obj:
+  web-nuget:

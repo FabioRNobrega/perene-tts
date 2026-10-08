@@ -1,0 +1,43 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject StudioSession Studio
+@inject NavigationManager Navigation
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="app-shell @(light ? "light" : "")">
+    <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="/" aria-label="PereneTTS home"><i class="bi bi-mic" aria-hidden="true"></i><strong>PereneTTS</strong></a>
+        <nav>
+            <NavLink href="/" Match="NavLinkMatch.All"><i class="bi bi-mic" aria-hidden="true"></i><span>Create a voice</span></NavLink>
+            <NavLink href="generate-audio"><i class="bi bi-file-earmark-text" aria-hidden="true"></i><span>Generate audio</span></NavLink>
+            <NavLink href="creations"><i class="bi bi-collection-play" aria-hidden="true"></i><span>My creations</span></NavLink>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="privacy"><span><i class="bi bi-shield-lock" aria-hidden="true"></i> Private · local only</span><button class="theme-toggle" @onclick="() => light = !light" aria-label="Toggle light or dark appearance" aria-pressed="@light"><i class="bi @(light ? "bi-sun" : "bi-moon-stars")" aria-hidden="true"></i></button></div>
+            <div class="engine-status" role="status"><span class="dot @(Studio.Health?.ModelReady == true ? "ready" : "")"></span><span>@Studio.HealthText</span></div>
+            <small>Copyright © @DateTime.UtcNow.Year PereneTech.</small>
+        </div>
+    </aside>
+    <main id="main-content" class="main-content" tabindex="-1">
+        <ErrorBoundary @ref="boundary"><ChildContent>
+            @if (Studio.Error is not null)
+            {
+                <div class="alert" role="alert"><span>@Studio.Error</span><button class="quiet" @onclick="() => Studio.SetError(null)">Dismiss</button></div>
+            }
+            @Body
+            <GenerationOutput />
+        </ChildContent><ErrorContent><div class="alert" role="alert">The studio encountered an error. <a href="/">Reload the studio</a>.</div></ErrorContent></ErrorBoundary>
+    </main>
+</div>
+@code {
+    private bool light;
+    private ErrorBoundary? boundary;
+    protected override void OnInitialized()
+    {
+        Studio.Changed += Changed;
+        Navigation.LocationChanged += Navigated;
+    }
+    protected override void OnAfterRender(bool firstRender) { if (firstRender) Studio.Start(); }
+    private void Changed() => _ = InvokeAsync(StateHasChanged);
+    private void Navigated(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args) => boundary?.Recover();
+    public void Dispose() { Studio.Changed -= Changed; Navigation.LocationChanged -= Navigated; }
+}

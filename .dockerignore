@@ -1,0 +1,9 @@
+**/bin
+**/obj
+**/__pycache__
+**/.pytest_cache
+**/.venv
+**/data
+**/models
+.git
+.env

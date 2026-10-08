@@ -1,0 +1,17 @@
+@inherits StudioComponent
+@if (Studio.Busy || Studio.Job is not null)
+{
+    <section class="card output" aria-labelledby="output-title">
+        <div class="card-heading"><i class="bi bi-soundwave" aria-hidden="true"></i><h2 id="output-title">@(Studio.Busy ? "Generating your audio" : Studio.Job?.Status == "completed" ? "Your audio is ready" : "Generation stopped")</h2></div>
+        <p role="status" aria-live="polite">@(Studio.Job?.Message ?? "Preparing audio…")</p>
+        @if (Studio.Busy)
+        {
+            <progress value="@(Studio.Job?.Percent ?? 0)" max="100" aria-label="Audio generation progress"></progress>
+            <small>@(Studio.Job?.Percent ?? 0)% · Generation can take several minutes. You can browse other pages while it runs.</small>
+        }
+        @if (Studio.Job?.Status == "completed")
+        {
+            <div class="player" @key="Studio.Job.JobId"><audio controls preload="metadata" src="@($"/audio/{Studio.Job.JobId}")"></audio><a class="button secondary" href="@($"/audio/{Studio.Job.JobId}?download=1")" download><i class="bi bi-download" aria-hidden="true"></i> Download MP3</a></div>
+        }
+    </section>
+}

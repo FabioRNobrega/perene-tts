@@ -1,0 +1,39 @@
+@page "/"
+@inherits StudioComponent
+<PageTitle>Create a voice · PereneTTS</PageTitle>
+<header class="page-header"><div><span class="eyebrow">VOICE STUDIO</span><h1>Create a voice</h1><p>Give your voice a name and start with a clear MP3 recording.</p></div><span class="badge"><i class="bi bi-mic" aria-hidden="true"></i> Voice creation</span></header>
+<div class="workspace">
+    <section class="card">
+        <div class="card-heading"><i class="bi bi-mic" aria-hidden="true"></i><h2>Voice details</h2></div>
+        <label for="voice-name">Voice name</label><input id="voice-name" @bind="name" maxlength="80" placeholder="e.g. My reading voice" disabled="@Studio.Busy" />
+        <label for="language">Recording language</label><select id="language" @bind="language" disabled="@Studio.Busy"><option value="en">English</option><option value="pt">Português</option><option value="sv">Svenska</option></select>
+        <div class="upload"><i class="bi bi-cloud-arrow-up" aria-hidden="true"></i><label for="reference">Choose your MP3 recording</label><InputFile id="reference" OnChange="ChooseFile" accept=".mp3,audio/mpeg" disabled="@Studio.Busy" /><small>@(file?.Name ?? "3–60 seconds · up to 20 MiB")</small></div>
+        <button class="primary" @onclick="CreateVoice" disabled="@(Studio.Busy || Studio.Health?.ModelReady != true || file is null || string.IsNullOrWhiteSpace(name))"><i class="bi bi-mic" aria-hidden="true"></i> Create voice &amp; hear sample</button>
+    </section>
+    <div class="support-cards">
+        <section class="card"><div class="card-heading"><i class="bi bi-chat-quote" aria-hidden="true"></i><h2>Your voice test</h2></div><p class="hint">We’ll save your voice and generate this sample in its language.</p><blockquote>@StudioSession.PreviewText(language)</blockquote></section>
+        <section class="card"><div class="card-heading"><i class="bi bi-info-circle" aria-hidden="true"></i><h2>A clear recording helps</h2></div><p>Use one speaker, a quiet room, and a natural speaking voice. Avoid music and long silences.</p><a href="generate-audio">Already have a voice? Generate audio <i class="bi bi-arrow-right" aria-hidden="true"></i></a></section>
+    </div>
+</div>
+@code {
+    private IBrowserFile? file;
+    private string name = "", language = "en";
+    private void ChooseFile(InputFileChangeEventArgs args)
+    {
+        file = null;
+        if (!args.File.Name.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) || args.File.Size > 20 * 1024 * 1024 || args.File.Size == 0)
+            Studio.SetError("Choose a nonempty MP3 recording up to 20 MiB.");
+        else { file = args.File; Studio.SetError(null); }
+    }
+    private async Task CreateVoice()
+    {
+        if (file is null || Studio.Busy) return;
+        try
+        {
+            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
+            await Studio.CreateVoice(stream, name.Trim(), language);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException)
+        { Studio.SetError("The recording could not be read. Choose your MP3 again."); }
+    }
+}

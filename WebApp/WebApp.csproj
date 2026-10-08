@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PereneTts</RootNamespace>
+    <!-- Docker restores the project before copying Razor files. Include framework assets at restore time. -->
+    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,17 @@
+@page "/generate-audio"
+@inherits StudioComponent
+<PageTitle>Generate audio · PereneTTS</PageTitle>
+<header class="page-header"><div><span class="eyebrow">VOICE STUDIO</span><h1>Generate audio</h1><p>Choose a saved voice and give it something new to say.</p></div><span class="badge"><i class="bi bi-file-earmark-text" aria-hidden="true"></i> Text to speech</span></header>
+<div class="workspace">
+    <section class="card">
+        <div class="card-heading"><i class="bi bi-file-earmark-text" aria-hidden="true"></i><h2>Your words</h2></div>
+        <div class="label-row"><label for="saved-voice">Saved voice</label><button class="quiet" @onclick="Studio.Refresh">Refresh voices</button></div>
+        <select id="saved-voice" @bind="Studio.SelectedVoice" disabled="@(Studio.Busy || Studio.Voices.Count == 0)"><option value="">Choose a voice</option>@foreach (var voice in Studio.Voices) { <option value="@voice.VoiceId">@voice.Name · @StudioSession.LanguageName(voice.LanguageId)</option> }</select>
+        @if (Studio.Voices.Count == 0) { <p class="hint">No saved voices yet. <a href="/">Create your first voice</a> to begin.</p> }
+        <div class="label-row"><label for="speech-text">Text to read</label><small>@Studio.SpeechText.Length / 5,000</small></div>
+        <textarea id="speech-text" @bind="Studio.SpeechText" @bind:event="oninput" maxlength="5000" rows="9" placeholder="Write something worth hearing…" disabled="@Studio.Busy"></textarea>
+        <p class="hint">Write in the voice’s language for the most natural result.</p>
+        <button class="primary" @onclick="Studio.Generate" disabled="@(Studio.Busy || Studio.Health?.ModelReady != true || string.IsNullOrEmpty(Studio.SelectedVoice) || string.IsNullOrWhiteSpace(Studio.SpeechText))"><i class="bi bi-play-circle" aria-hidden="true"></i> Generate audio</button>
+    </section>
+    <div class="support-cards"><section class="card"><div class="card-heading"><i class="bi bi-mic" aria-hidden="true"></i><h2>Your voice library</h2></div><strong class="stat">@Studio.Voices.Count</strong><p>Saved @(Studio.Voices.Count == 1 ? "voice" : "voices"), ready to speak.</p><a href="/">Create another voice <i class="bi bi-arrow-right" aria-hidden="true"></i></a></section><section class="card"><div class="card-heading"><i class="bi bi-collection-play" aria-hidden="true"></i><h2>Keep every creation</h2></div><p>Your generated audio is saved locally. Listen again or download an MP3 from your library.</p><a href="creations">Browse my creations <i class="bi bi-arrow-right" aria-hidden="true"></i></a></section></div>
+</div>

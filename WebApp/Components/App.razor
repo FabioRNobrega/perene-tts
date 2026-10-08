@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base href="/" />
+    <link rel="stylesheet" href="@Assets["vendor/fonts.css"]" />
+    <link rel="stylesheet" href="@Assets["vendor/bootstrap-icons.css"]" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <ImportMap />
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+<body>
+    <Routes @rendermode="InteractiveServer" />
+    <div id="blazor-error-ui" role="alert">Connection interrupted. <a href="/">Reload the studio</a>.</div>
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+</html>
