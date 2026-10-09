@@ -35,6 +35,7 @@ services:
       TTS_DEVICE: cpu
       HF_HOME: /models
       TTS_DATA_DIR: /data
+      TTS_BATCH_ENABLED: "${TTS_BATCH_ENABLED:-true}"
     volumes:
       - tts-data:/data
       - tts-models:/models

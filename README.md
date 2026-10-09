@@ -1,6 +1,6 @@
 # PereneTTS
 
-A small local voice studio: upload an MP3 or WAV recording to preserve a named voice, hear a predefined sample, then generate new speech in English, Portuguese, or Swedish. The frontend is a .NET 10 Blazor Interactive Server application; a separate Python/FastAPI worker runs Chatterbox Multilingual V3. Generated audio can be played and downloaded as MP3. The PereneArchive-style sidebar separates **Create a voice**, **Generate audio**, and **My creations**. Montserrat, Zilla Slab, and Bootstrap Icons are bundled locally; forest-green dark mode and cream light mode follow the Perene design guide.
+A small local voice studio: upload an MP3 or WAV recording to preserve a named voice, hear a predefined sample, then generate new speech in English, Portuguese, or Swedish. The frontend is a .NET 10 Blazor Interactive Server application; a separate Python/FastAPI worker runs Chatterbox Multilingual V3. Generated audio can be played and downloaded as MP3. A **Batch audio** page converts a folder of book `.txt` files into one MP3 per file with pause, resume, stop, and retry. The PereneArchive-style sidebar separates **Create a voice**, **Generate audio**, **Batch audio**, and **My creations**. Montserrat, Zilla Slab, and Bootstrap Icons are bundled locally; forest-green dark mode and cream light mode follow the Perene design guide.
 
 ## Start with Docker
 
@@ -22,7 +22,7 @@ Like perene-archive, the default web container uses the .NET 10 SDK, mounts `Web
 
 Polling detects edits through Docker mounts. Supported Razor/C#/CSS edits hot reload; edits requiring a restart are handled automatically without a console prompt. `bin`, `obj`, and NuGet packages use dedicated volumes so container builds stay out of the authored source tree. Web restore uses configurable `WEB_DNS_PRIMARY` and `WEB_DNS_SECONDARY` resolvers for the same Podman DNS issue described below. Watch guidance follows [Microsoft Learn](https://learn.microsoft.com/dotnet/core/tools/dotnet-watch).
 
-Use `make dotnet ARGS="build"` for an explicit SDK build. `make test` runs the worker tests and compiles the published .NET runtime target; `Dockerfile` retains a separate non-root `runtime` stage for publication validation. Development Compose deliberately uses the SDK watcher rather than that published stage. The Mac web container uses the same watch setup with the native TTS worker.
+Use `make dotnet ARGS="build"` for an explicit SDK build. `make test` runs the worker pytest suite, the `WebApp.Tests` xUnit project (Dockerfile `web-test` stage), and compiles the published .NET runtime target; `Dockerfile` retains a separate non-root `runtime` stage for publication validation. Development Compose deliberately uses the SDK watcher rather than that published stage. The Mac web container uses the same watch setup with the native TTS worker.
 
 ## Use the studio
 
@@ -34,7 +34,29 @@ Use `make dotnet ARGS="build"` for an explicit SDK build. `make test` runs the w
 
 The English voice test reads: “Hello! Welcome to PereneTTS. This is a quick voice test to hear how natural and clear my voice sounds.” Portuguese and Swedish use equivalent translations, shown before uploading.
 
-Voices are local and shared across browsers using this instance. Uploading the same decoded recording in the same language reuses its voice ID and original name. Voices are bound to their selected language. Only one operation runs at a time to prevent the model's mutable conditioning from crossing voices. Other submissions receive a busy message.
+Voices are local and shared across browsers using this instance. Uploading the same decoded recording in the same language reuses its voice ID and original name. Voices are bound to their selected language. Only one voice test or text generation runs at a time to prevent the model's mutable conditioning from crossing voices; a second one receives a busy message.
+
+## Batch audio
+
+Use **Batch audio** to turn a book export (for example the book-notes-ia `EbookParseService` output folder) into an audiobook-style set of MP3s:
+
+1. Enter a batch name (1–80 characters, no `/`, `\`, or control characters) and choose a saved voice. Every file is read in that voice's language.
+2. Click **Choose folder** (or multi-select files). Only `.txt` files are kept and other files are counted as skipped. A new selection replaces the list.
+3. Check the narration order: names ending in `intro` first, then `chapter-NNN.txt` in numeric order, then other files in natural order, then names ending in `outro`. Move or remove rows; each row shows the output name `<Batch name> NNN.mp3`.
+4. Click **Start batch**. Conversion runs inside the worker, so you can close the browser; reopen the page to see the current track, chunk, overall percent, elapsed synthesis time, and an estimate from the measured average chunk time. The sidebar shows “Batch · n/m tracks” while a batch is active.
+
+Limits: 1–200 files, each valid UTF-8 (a leading BOM is ignored), 1–200,000 characters after trimming, at most 1 MiB, and at most 10 MiB per batch. The page pre-checks these and the worker rejects the whole batch with the file name and reason if any file is invalid.
+
+- **Pause** finishes the current chunk (≤ 280 characters), saves it as a checkpoint, and releases the voice engine. **Resume** continues from the next unsynthesized chunk, even after a worker restart.
+- **Stop** (after a confirmation) discards the current track's partial progress, keeps completed tracks, and never touches your original files. **Retry** on a failed or stopped batch regenerates only tracks whose MP3 is missing or fails its checksum; a failed track can also be retried alone.
+- **Download all** returns `<Batch name>.zip` with every completed `<Batch name> NNN.mp3`. Each track also plays and downloads individually. **Delete** (not available while running) permanently removes the batch's uploaded text, checkpoints, and tracks.
+- Batches run one at a time in creation order. While a batch runs, voice tests and text generation still start: they wait at most one chunk (“Waiting for the batch to reach a safe point”), run first, and the batch reloads its own voice afterwards.
+- If the worker restarts, interrupted batches return to the queue and continue automatically once the model is ready, from their last checkpoint. Paused batches stay paused. Pause a batch if you want the CPU back.
+- Completed tracks also appear in **My creations** with a “Batch · name · NNN/MMM” tag. Select the tag to show only that batch; clear the chip to return. Chapter text is not shown there.
+
+Tracks are encoded at 192 kbps MP3, the same quality as single-text speech; resumed tracks use the same per-chunk seeds and silences as an uninterrupted run. Plan disk space for about 1.4 MB per minute of audio (a ~436,000-character book is roughly 8 hours, ~0.7 GB) plus one track's WAV checkpoints (~2.9 MB per minute).
+
+Set `TTS_BATCH_ENABLED=false` (in `.env` for Docker, or the environment for `make mac-worker`) to turn the runner off: new batches are refused with 503, the page explains why, and existing batches stay listed and downloadable. Voice tests and generation are unaffected.
 
 ## Apple Silicon: use Metal
 
@@ -69,7 +91,7 @@ Pure Docker mode (`make docker-run-bg`) uses CPU and does not force amd64 emulat
 | `make docker-down` | Stop the stack, preserving data/model volumes. |
 | `make docker-logs` | Follow web/worker logs. |
 | `make docker-ps` | Show container status. |
-| `make test` | Run pytest in a lightweight model-free container, then compile the web image. |
+| `make test` | Run pytest in a lightweight model-free container, run the xUnit `WebApp.Tests` in the SDK image, then compile the web image. |
 | `make docker-check` | Validate standard and Mac Compose configurations. |
 | `make docker-reset` | Delete containers and all saved voices/audio/model/key volumes. |
 | `make docker-shell` / `make docker-exec` | Open a new/running .NET SDK shell. |
@@ -85,11 +107,11 @@ You can also run `docker compose up -d --build web tts` without Make. The .NET p
 
 ## Persistence and lifecycle
 
-Docker uses named volumes `perene-tts_tts-data`, `perene-tts_tts-models`, and `perene-tts_web-keys`, plus development `web-bin`, `web-obj`, and `web-nuget` volumes. The data volume contains `voices/<uuid>/reference.wav`, `conditioning.pt`, checksum/revision metadata, `name.json`, and `outputs/<job-uuid>.mp3` with a JSON sidecar containing the voice, language, text, type, and UTC creation time. Models are cached separately. Restarting containers, rebuilding images, or running `make docker-down` preserves these volumes. Removing volumes manually destroys their contents; there is no automatic audio retention/deletion policy. Back up the data volume for voices you want to keep.
+Docker uses named volumes `perene-tts_tts-data`, `perene-tts_tts-models`, and `perene-tts_web-keys`, plus development `web-bin`, `web-obj`, and `web-nuget` volumes. The data volume contains `voices/<uuid>/reference.wav`, `conditioning.pt`, checksum/revision metadata, `name.json`, and `outputs/<job-uuid>.mp3` with a JSON sidecar containing the voice, language, text, type, and UTC creation time. Batches live in `batches/<batch-uuid>/`: an atomic `manifest.json` (states, checksums, timings), server-named `sources/NNN.txt` copies, published `tracks/NNN.mp3`, and `work/NNN/` chunk checkpoints for the track in progress. Uploaded file names are labels only and never used as paths. Deleting `batches/` removes all batch data without touching voices or other audio. Models are cached separately. Restarting containers, rebuilding images, or running `make docker-down` preserves these volumes. Removing volumes manually destroys their contents; there is no automatic audio retention/deletion policy. Back up the data volume for voices you want to keep.
 
 Native macOS stores recordings/conditioning/audio in `services/ChatterboxTtsService/data` and models in `services/ChatterboxTtsService/models`; both are ignored by Git. `TTS_DATA_DIR` and `HF_HOME` can override these paths. Native and Docker stores are separate; switching modes does not automatically migrate voices.
 
-Jobs run in one Python process. The latest 100 job statuses are held in memory, and in-flight jobs do not resume after a worker restart. Completed MP3 URLs and voices remain on disk. Retry an interrupted operation; if conditioning was already saved, it will be reused. My creations lists completed audio from disk, including older MP3s without metadata. Earlier files appear as “Earlier creation” with their file timestamp; their original voice/text information cannot be recovered. Running job progress and text drafts are shared across pages within a browser session; refreshing the browser clears these transient values.
+Jobs run in one Python process. The latest 100 voice-test/speech job statuses are held in memory, and those in-flight jobs do not resume after a worker restart (batches do; see Batch audio). Completed MP3 URLs and voices remain on disk. Retry an interrupted operation; if conditioning was already saved, it will be reused. My creations lists completed audio from disk, including older MP3s without metadata. Earlier files appear as “Earlier creation” with their file timestamp; their original voice/text information cannot be recovered. Running job progress and text drafts are shared across pages within a browser session; refreshing the browser clears these transient values.
 
 ## Architecture
 
@@ -99,6 +121,10 @@ flowchart LR
     Blazor --> Worker[FastAPI / StudioService]
     Worker --> Store[LocalVoiceStore]
     Worker --> Engine[ChatterboxEngine]
+    Worker --> Batches[BatchService / BatchRunner thread]
+    Batches --> Gate[OperationGate]
+    Gate --> Engine
+    Batches --> BatchData[Batch manifests, checkpoints, tracks]
     Engine --> Model[Chatterbox Multilingual V3]
     Store --> Data[Persistent local voices]
     Worker --> FFmpeg[FFmpeg MP3 conversion]
@@ -110,7 +136,7 @@ The service adapts `book-notes-ia/services/ChatterboxTtsService`'s engine, UUID 
 
 The .NET host uses typed HttpClient and Interactive Server rendering per [Microsoft Learn render modes](https://learn.microsoft.com/aspnet/core/blazor/components/render-modes?view=aspnetcore-10.0). Upload streaming uses explicit bounds following [Microsoft Learn file uploads](https://learn.microsoft.com/aspnet/core/blazor/file-uploads?view=aspnetcore-10.0).
 
-Worker routes: `GET /health`, `GET /voices`, `GET /creations`, `POST /voices` (multipart name/language/audio), `POST /speech` (voice_id/text), `GET /jobs/{uuid}`, `GET /audio/{uuid}`. Audio is streamed through the web host at `/audio/{uuid}`; `?download=1` supplies the download disposition. The Docker worker API is published only on localhost; use http://localhost:5081/health or http://localhost:5081/docs. The worker root has no application screen. `0.0.0.0` in Uvicorn logs is a listening address, not the browser URL.
+Worker routes: `GET /health`, `GET /voices`, `GET /creations`, `POST /voices` (multipart name/language/audio), `POST /speech` (voice_id/text), `GET /jobs/{uuid}`, `GET /audio/{uuid}`, and the batch routes `GET|POST /batches`, `GET|DELETE /batches/{uuid}`, `POST /batches/{uuid}/pause|resume|stop|retry`, `POST /batches/{uuid}/tracks/{n}/retry`, `GET /batches/{uuid}/tracks/{n}/audio`, `GET /batches/{uuid}/archive`. Audio is streamed through the web host at `/audio/{uuid}`, `/batches/{uuid}/tracks/{n}`, and `/batches/{uuid}/archive`; `?download=1` supplies the download disposition. The Docker worker API is published only on localhost; use http://localhost:5081/health or http://localhost:5081/docs. The worker root has no application screen. `0.0.0.0` in Uvicorn logs is a listening address, not the browser URL.
 
 ## Troubleshooting
 
@@ -121,12 +147,13 @@ After updating configuration, run `make docker-run-bg` to recreate changed conta
 The ASP.NET Data Protection “No XML encryptor configured” line is a warning about unencrypted local key storage, not the model startup failure. Keys already persist in their dedicated volume.
 
 - **Loading or model error:** inspect `make docker-logs`. First start requires access to Hugging Face; cached weights are reused on subsequent starts. The worker retries failed model loads automatically after 15 seconds, then 30 seconds, then every 60 seconds until ready or stopped.
-- **Busy:** wait for the active operation to finish before submitting another one.
+- **Busy:** wait for the active voice test or generation to finish before submitting another one. A running batch never causes this message.
+- **Batch stays queued with “Waiting for the voice engine”:** the model is still loading; the batch starts automatically when it is ready.
 - **Invalid recording:** choose a readable, non-silent MP3 or WAV with 3–60 seconds of speech.
 - **Worker unavailable:** ensure the worker is running. In Mac mode start `make mac-worker` before `make mac-up`.
 - **Docker socket access on Steam Deck:** ensure the current user can access the Docker/Podman socket.
 
-This foundation deliberately has no database, authentication, audiobook pipeline, GPU container configuration, or public deployment setup. Hardware performance and speech quality need real-model tests on the intended machines.
+This project deliberately has no database, authentication, combined single-file audiobook output, GPU container configuration, or public deployment setup. Hardware performance and speech quality need real-model tests on the intended machines.
 
 Validation on Linux x86-64: both images build, 34 pytest tests pass, real English preview/custom-text synthesis succeeds, and Chromium verifies the Swedish upload/generation/download flow with a fake engine plus real FFmpeg. Desktop/mobile layouts were visually inspected. See the foundation Validation document for pending hardware and language-quality checks.
 

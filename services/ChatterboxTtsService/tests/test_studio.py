@@ -6,45 +6,11 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 import pytest
 
-from app.engine import SynthesisError, SynthesisResult
-from app.main import create_app
-from app.studio import MAX_UPLOAD, PREVIEWS, StudioService, ffmpeg
-from conftest import write_wav
-
-
-class FakeEngine:
-    ready = True
-    load_error = None
-    device = "cpu"
-    model_name = "multilingual-v3"
-    model_revision = "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
-
-    def __init__(self):
-        self.prepared = 0
-        self.loaded = 0
-        self.calls = []
-        self.block = None
-        self.fail = False
-
-    def prepare_conditioning(self, path):
-        self.prepared += 1
-
-    def save_conditioning(self, path):
-        path.write_bytes(b"fake-conditioning")
-
-    def load_conditioning(self, path):
-        assert path.read_bytes() == b"fake-conditioning"
-        self.loaded += 1
-
-    def synthesize(self, chunks, output, language, *args):
-        if self.block is not None:
-            assert self.block.wait(10)
-        if self.fail:
-            raise SynthesisError("private internal path /secret")
-        self.calls.append((language, " ".join(chunk.text for chunk in chunks)))
-        write_wav(output)
-        args[-1](len(chunks), len(chunks))
-        return SynthesisResult(16000, 3.1, len(chunks))
+from app.batch_runner import BatchRunner
+from app.batch_service import BatchService
+from app.main import BATCH_CREATION_FIELDS, create_app
+from app.studio import MAX_UPLOAD, PREVIEWS, WAITING_FOR_BATCH, StudioService, encode_mp3, ffmpeg
+from conftest import FakeEngine, make_voice, wait, write_wav
 
 
 @pytest.fixture
@@ -61,17 +27,6 @@ def recording(tmp_path, duration=3.5, sample=1000):
     write_wav(wav, duration, sample)
     ffmpeg("-i", str(wav), str(mp3))
     return mp3.read_bytes()
-
-
-def wait(client, job):
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        result = client.get(f"/jobs/{job['job_id']}")
-        assert result.status_code == 200
-        if result.json()["status"] != "running":
-            return result.json()
-        time.sleep(0.01)
-    pytest.fail("Job did not finish")
 
 
 def create(client, content, language="en", name="Reading voice", filename="reference.mp3"):
@@ -120,7 +75,9 @@ def test_voice_preview_speech_and_restart(environment, tmp_path, language):
     assert creations[0]["kind"] == "speech" and creations[0]["text"] == "A new phrase."
     assert creations[0]["voice_name"] == "Reading voice" and creations[0]["language_id"] == language
     assert creations[-1]["kind"] == "preview" and creations[-1]["text"] == PREVIEWS[language]
-    assert restarted.creations() == creations
+    assert all(entry[key] is None for entry in creations for key in BATCH_CREATION_FIELDS)
+    assert [{key: value for key, value in entry.items() if key not in BATCH_CREATION_FIELDS}
+            for entry in creations] == restarted.creations()
     with TestClient(create_app(restarted)) as restarted_client:
         assert restarted_client.get("/creations").json() == creations
         assert restarted_client.get(f"/audio/{generated['job_id']}").status_code == 200
@@ -207,3 +164,82 @@ def test_legacy_audio_and_corrupt_metadata_remain_browsable(environment):
 
 def test_english_preview_matches_requested_text():
     assert PREVIEWS["en"] == "Hello! Welcome to PereneTTS. This is a quick voice test to hear how natural and clear my voice sounds."
+
+
+def batch_environment(tmp_path):
+    engine = FakeEngine()
+    studio = StudioService(tmp_path / "data", engine)
+    batches = BatchService(studio)
+    runner = BatchRunner(batches, engine, studio.gate, studio.select_voice, encode_mp3)
+    return engine, studio, batches, runner
+
+
+def post_batch(client, voice_id, texts, name="Lumky"):
+    files = [("files", (f"chapter-{index:03d}.txt", text.encode(), "text/plain"))
+             for index, text in enumerate(texts, start=1)]
+    return client.post("/batches", data={"name": name, "voice_id": voice_id}, files=files)
+
+
+def test_interactive_jobs_run_with_priority_during_a_batch(tmp_path):
+    engine, studio, batches, runner = batch_environment(tmp_path)
+    with TestClient(create_app(studio, batches)) as client:
+        voice_id = make_voice(client, tmp_path)
+        loads_before = engine.loaded
+        batch = post_batch(client, voice_id, ["First chunk. " * 30 + "\n\n" + "Second paragraph."]).json()
+        in_chunk, release = threading.Event(), threading.Event()
+        jobs = {}
+
+        def first_chunk_holds_model(chunks, offset):
+            if offset == 0 and not in_chunk.is_set():
+                in_chunk.set()
+                assert release.wait(10)
+
+        engine.before = first_chunk_holds_model
+        worker = threading.Thread(target=runner.run_once)
+        worker.start()
+        assert in_chunk.wait(10)
+        engine.before = None
+        response = client.post("/voices", data={"name": "Second", "language": "sv"},
+                               files={"audio": ("reference.mp3", recording(tmp_path), "application/octet-stream")})
+        assert response.status_code == 202
+        jobs["voice"] = response.json()
+        deadline = time.monotonic() + 5
+        while client.get(f"/jobs/{jobs['voice']['job_id']}").json()["message"] != WAITING_FOR_BATCH:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        # Only a second interactive operation is busy; the batch never causes 409.
+        assert client.post("/speech", json={"voice_id": voice_id, "text": "Hello"}).status_code == 409
+        release.set()
+        assert wait(client, jobs["voice"])["status"] == "completed"
+        worker.join(15)
+        assert not worker.is_alive()
+        detail = client.get(f"/batches/{batch['batch_id']}").json()
+        assert detail["batch"]["state"] == "completed"
+        # The preview took the model between chunks, so the batch reloaded its own voice afterwards.
+        assert engine.loaded >= loads_before + 2
+        assert studio.gate.conditioning_owner == voice_id
+
+
+def test_creations_include_completed_batch_tracks_without_text(tmp_path):
+    engine, studio, batches, runner = batch_environment(tmp_path)
+    with TestClient(create_app(studio, batches)) as client:
+        voice_id = make_voice(client, tmp_path)
+        engine.fail_when = lambda chunks: "Broken" in chunks[0].text
+        batch = post_batch(client, voice_id, ["One. Chapter text.", "Broken chapter.", "Three."]).json()
+        assert runner.run_once()
+        creations = client.get("/creations").json()
+        tracks = [entry for entry in creations if entry["kind"] == "batch"]
+        assert sorted(entry["track_number"] for entry in tracks) == [1, 3]
+        assert {entry["job_id"] for entry in tracks} == {f"{batch['batch_id']}-001", f"{batch['batch_id']}-003"}
+        for entry in tracks:
+            assert entry["text"] == "" and entry["batch_id"] == batch["batch_id"]
+            assert entry["batch_name"] == "Lumky" and entry["track_count"] == 3
+            assert entry["source_name"] == f"chapter-{entry['track_number']:03d}.txt"
+            assert entry["voice_name"] == "Reading voice" and entry["language_id"] == "en"
+        preview = next(entry for entry in creations if entry["kind"] == "preview")
+        assert preview["batch_id"] is None and preview["track_number"] is None
+        assert [entry["created_at"] for entry in creations] == sorted(
+            (entry["created_at"] for entry in creations), reverse=True)
+        assert "Chapter text" not in client.get("/creations").text
+        client.delete(f"/batches/{batch['batch_id']}")
+        assert all(entry["kind"] != "batch" for entry in client.get("/creations").json())

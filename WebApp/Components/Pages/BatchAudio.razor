@@ -1,0 +1,312 @@
+@page "/batch-audio"
+@inherits StudioComponent
+<PageTitle>Batch audio · PereneTTS</PageTitle>
+<h1 class="visually-hidden">Batch audio</h1>
+<section class="tab-shell">
+    <div class="tab-list" role="tablist" aria-label="Batch audio">
+        <button id="tab-new" class="tab @(showBatches ? null : "active")" type="button" role="tab" aria-selected="@(showBatches ? "false" : "true")" aria-controls="panel-new" @onclick="() => showBatches = false"><i class="bi bi-plus-square" aria-hidden="true"></i>New batch</button>
+        <button id="tab-batches" class="tab @(showBatches ? "active" : null)" type="button" role="tab" aria-selected="@(showBatches ? "true" : "false")" aria-controls="panel-batches" @onclick="ShowBatches"><i class="bi bi-list-task" aria-hidden="true"></i>Batches<span class="tab-count">@Studio.Batches.Count</span></button>
+    </div>
+@if (!showBatches)
+{
+<div id="panel-new" class="tab-panel" role="tabpanel" aria-labelledby="tab-new">
+<div class="workspace">
+    <section class="card" aria-labelledby="new-batch-title">
+        <div class="card-heading"><i class="bi bi-files" aria-hidden="true"></i><h2 id="new-batch-title">New batch</h2></div>
+        <p class="hint card-intro">Turn a folder of .txt files into one MP3 per file. Conversion keeps running in the voice engine when you close this page.</p>
+        @if (!Studio.BatchEnabled)
+        {
+            <p class="hint" role="status">Batch audio is turned off on this voice engine (<code>TTS_BATCH_ENABLED=false</code>). Existing batches stay listed and downloadable in the Batches tab.</p>
+        }
+        else
+        {
+            <div class="label-row"><label for="batch-name">Batch name</label><small>@name.Length / 80</small></div>
+            <input id="batch-name" @bind="name" @bind:event="oninput" maxlength="80" placeholder="e.g. In Milton Lumky Territory" disabled="@Locked" aria-describedby="batch-name-hint" />
+            <small id="batch-name-hint" class="hint">Each file becomes “@(string.IsNullOrWhiteSpace(name) ? "Name" : name.Trim()) 001.mp3”, “… 002.mp3”, and so on.</small>
+            <div class="label-row"><label for="batch-voice">Saved voice</label><button class="quiet" @onclick="Studio.Refresh">Refresh voices</button></div>
+            <select id="batch-voice" @bind="voiceId" disabled="@(Locked || Studio.Voices.Count == 0)"><option value="">Choose a voice</option>@foreach (var voice in Studio.Voices) { <option value="@voice.VoiceId">@voice.Name · @StudioSession.LanguageName(voice.LanguageId)</option> }</select>
+            @if (Studio.Voices.Count == 0) { <p class="hint">No saved voices yet. <a href="/">Create your first voice</a> to begin.</p> }
+            else { <p class="hint">Every file is read in the voice’s language.</p> }
+            <div class="upload batch-pickers">
+                <i class="bi bi-folder2-open" aria-hidden="true"></i>
+                <strong class="picker-title">Add your book’s .txt files</strong>
+                @* Native inputs stay focusable but hidden; the labels are the visible, aligned buttons. *@
+                <div class="picker-row">
+                    <div class="picker">
+                        <InputFile id="batch-folder" class="picker-input" OnChange="ChooseFiles" webkitdirectory multiple disabled="@Locked" />
+                        <label for="batch-folder" class="button secondary picker-button"><i class="bi bi-folder2" aria-hidden="true"></i> Choose folder</label>
+                    </div>
+                    <div class="picker">
+                        <InputFile id="batch-files" class="picker-input" OnChange="ChooseFiles" accept=".txt,text/plain" multiple disabled="@Locked" />
+                        <label for="batch-files" class="button secondary picker-button"><i class="bi bi-file-earmark-text" aria-hidden="true"></i> Choose .txt files</label>
+                    </div>
+                </div>
+                <small>Up to 200 UTF-8 .txt files · 1 MiB and 200,000 characters each · 10 MiB in total</small>
+            </div>
+            <div role="status" aria-live="polite">
+                @if (checking) { <p class="hint">Checking files…</p> }
+                @if (skipped > 0) { <p class="hint">@skipped file@(skipped == 1 ? "" : "s") skipped (not .txt)</p> }
+            </div>
+            @if (files.Count > 0)
+            {
+                <div class="label-row"><strong class="list-title">Narration order</strong><small>@files.Count file@(files.Count == 1 ? "" : "s") · @FormatBytes(TotalBytes)</small></div>
+                <ol class="file-list">
+                    @for (var index = 0; index < files.Count; index++)
+                    {
+                        var position = index;
+                        var file = files[position];
+                        <li class="file-row @(file.Error is null ? null : "invalid")" @key="file">
+                            <span class="track-number">@((position + 1).ToString("000"))</span>
+                            <div class="job-info">
+                                <strong title="@file.Name">@file.Name</strong>
+                                <small>→ @BatchRules.OutputName(string.IsNullOrWhiteSpace(name) ? "Name" : name, position + 1) · @(file.Characters is { } characters ? $"{characters:N0} characters" : FormatBytes(file.Size))</small>
+                                @if (file.Error is not null) { <small class="field-error">@file.Error</small> }
+                            </div>
+                            <div class="job-actions">
+                                <button class="button secondary icon-button" aria-label="Move @file.Name up" title="Move up" disabled="@(Locked || position == 0)" @onclick="() => Move(position, -1)"><i class="bi bi-arrow-up" aria-hidden="true"></i></button>
+                                <button class="button secondary icon-button" aria-label="Move @file.Name down" title="Move down" disabled="@(Locked || position == files.Count - 1)" @onclick="() => Move(position, 1)"><i class="bi bi-arrow-down" aria-hidden="true"></i></button>
+                                <button class="button secondary icon-button" aria-label="Remove @file.Name" title="Remove" disabled="@Locked" @onclick="() => Remove(position)"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+                            </div>
+                        </li>
+                    }
+                </ol>
+            }
+            @if (ValidationMessages.Count > 0 && (files.Count > 0 || name.Length > 0))
+            {
+                <ul class="validation" role="alert">@foreach (var message in ValidationMessages) { <li>@message</li> }</ul>
+            }
+            <button class="primary" @onclick="StartBatch" disabled="@(!CanStart)"><i class="bi bi-play-circle" aria-hidden="true"></i> @(starting ? "Uploading…" : "Start batch")</button>
+            @if (Studio.Health?.ModelReady != true) { <p class="hint">The voice engine is still loading. You can start when it is ready.</p> }
+        }
+    </section>
+    <div class="support-cards">
+        <section class="card"><div class="card-heading"><i class="bi bi-list-ol" aria-hidden="true"></i><h2>Narration order</h2></div><p>Files ending in “intro” come first, then chapter-001, chapter-002…, then other files, and files ending in “outro” last. Move or remove files before you start.</p></section>
+        <section class="card"><div class="card-heading"><i class="bi bi-pause-circle" aria-hidden="true"></i><h2>Pause any time</h2></div><p>Pause stops after the current chunk and frees the voice engine. Resume continues from the next unsynthesized chunk, even after a restart.</p><a href="creations">Browse my creations <i class="bi bi-arrow-right" aria-hidden="true"></i></a></section>
+    </div>
+</div>
+</div>
+}
+else
+{
+<div id="panel-batches" class="tab-panel" role="tabpanel" aria-labelledby="tab-batches">
+    <div class="list-heading"><p class="page-summary">@BatchSummaryText</p><button class="button secondary" @onclick="Studio.Refresh"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Refresh</button></div>
+    @if (!Studio.BatchesLoaded && Studio.Error is null)
+    {
+        <div class="card skeleton" role="status" aria-label="Loading batches"><span></span><span></span></div>
+    }
+    else if (Studio.Batches.Count == 0)
+    {
+        <div class="empty-state card"><i class="bi bi-files" aria-hidden="true"></i><h2>No batches yet</h2><p>Choose a folder of .txt files to convert a whole book.</p><button class="button secondary" @onclick="() => showBatches = false"><i class="bi bi-plus-square" aria-hidden="true"></i> New batch</button></div>
+    }
+    else
+    {
+        <ul class="job-list">@foreach (var batch in Pager.Slice(Studio.Batches, ref pageNumber, pageSize))
+        {
+            <BatchRow @key="batch.BatchId" Batch="batch" Detail="@details.GetValueOrDefault(batch.BatchId)" Expanded="@expanded.Contains(batch.BatchId)" Busy="acting"
+                      OnToggle="Toggle" OnPause="b => Act(() => Studio.PauseBatch(b.BatchId))" OnResume="b => Act(() => Studio.ResumeBatch(b.BatchId))"
+                      OnRetry="b => Act(() => Studio.RetryBatch(b.BatchId))" OnStop="b => Ask(b, false)" OnDelete="b => Ask(b, true)"
+                      OnRetryTrack="number => Act(() => Studio.RetryTrack(batch.BatchId, number))" />
+        }</ul>
+        <Pager Total="Studio.Batches.Count" @bind-Page="pageNumber" @bind-PageSize="pageSize" Label="Batch pages" />
+    }
+</div>
+}
+</section>
+<ConfirmDialog Open="@(confirm is not null && !confirmDelete)" Title="Stop this batch?" ConfirmLabel="Stop batch" Icon="bi-stop-circle" OnCancel="CloseDialog" OnConfirm="Confirm">
+    <p>Stopping “@confirm?.Name” ends the conversion:</p>
+    <ul>
+        <li>Partial progress on the current track is discarded.</li>
+        <li>Completed tracks are kept.</li>
+        <li>Your original text files are not affected.</li>
+    </ul>
+    <p class="hint">You can Retry later to convert the remaining tracks.</p>
+</ConfirmDialog>
+<ConfirmDialog Open="@(confirm is not null && confirmDelete)" Title="Delete this batch?" ConfirmLabel="Delete batch" Icon="bi-trash" OnCancel="CloseDialog" OnConfirm="Confirm">
+    <p>“@confirm?.Name” and all of its uploaded text, checkpoints, and MP3 tracks will be permanently removed from this computer. Its tracks also leave My creations.</p>
+</ConfirmDialog>
+@code {
+    private const int MaxSelection = 1000;
+    [SupplyParameterFromQuery(Name = "batch")] public string? BatchQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "tab")] public string? TabQuery { get; set; }
+    private sealed record SelectedFile(IBrowserFile File, string Name, long Size, int? Characters, string? Error);
+    private readonly HashSet<string> expanded = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, BatchDetail> details = new(StringComparer.Ordinal);
+    private readonly CancellationTokenSource lifetime = new();
+    private List<SelectedFile> files = [];
+    private string name = "", voiceId = "";
+    private int skipped, pageNumber = 1, pageSize = 10;
+    private bool checking, starting, acting, confirmDelete, showBatches;
+    private string? selectionError;
+    private BatchSummary? confirm;
+
+    private bool Locked => checking || starting;
+    private long TotalBytes => files.Sum(file => file.Size);
+    private List<string> ValidationMessages =>
+        new[] { selectionError, BatchRules.NameError(name), BatchRules.SelectionError(files.Count, TotalBytes) }
+            .Concat(files.Select(file => file.Error)).OfType<string>().ToList();
+    private bool CanStart => !Locked && files.Count > 0 && ValidationMessages.Count == 0 && !string.IsNullOrEmpty(voiceId)
+        && Studio.Health?.ModelReady == true;
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        voiceId = Studio.SelectedVoice;
+        Studio.Changed += StudioChanged;
+    }
+
+    // ?tab=batches or ?batch=<id> (sidebar status, My creations "Open batch") opens the Batches tab.
+    protected override Task OnParametersSetAsync()
+    {
+        showBatches = string.Equals(TabQuery, "batches", StringComparison.OrdinalIgnoreCase);
+        if (Guid.TryParse(BatchQuery, out var id))
+        {
+            showBatches = true;
+            expanded.Add(id.ToString("D"));
+        }
+        return RefreshDetails();
+    }
+
+    private string BatchSummaryText
+    {
+        get
+        {
+            var active = Studio.Batches.Count(batch => BatchRules.IsActive(batch.State));
+            var text = $"{Studio.Batches.Count} batch{(Studio.Batches.Count == 1 ? "" : "es")}";
+            return active > 0 ? $"{text} · {active} active" : text;
+        }
+    }
+
+    private Task ShowBatches()
+    {
+        showBatches = true;
+        return RefreshDetails();
+    }
+
+    private void StudioChanged() => _ = InvokeAsync(RefreshDetails);
+
+    // Expanded rows reload their tracks only when the worker reports a newer summary.
+    private async Task RefreshDetails()
+    {
+        foreach (var id in expanded.ToList())
+        {
+            var summary = Studio.Batches.FirstOrDefault(batch => batch.BatchId == id);
+            if (Studio.BatchesLoaded && summary is null) { details.Remove(id); continue; }
+            if (details.TryGetValue(id, out var cached) && summary is not null && cached.Batch.UpdatedAt == summary.UpdatedAt) continue;
+            if (await Studio.LoadBatch(id) is { } detail) details[id] = detail;
+        }
+        if (expanded.Count > 0) StateHasChanged();
+    }
+
+    private async Task ChooseFiles(InputFileChangeEventArgs args)
+    {
+        files = [];
+        skipped = 0;
+        selectionError = null;
+        if (args.FileCount > MaxSelection)
+        {
+            selectionError = $"Choose at most {BatchRules.MaxFiles} .txt files.";
+            return;
+        }
+        var chosen = args.GetMultipleFiles(MaxSelection);
+        var texts = chosen.Where(file => BatchRules.IsTextFile(file.Name)).ToList();
+        skipped = chosen.Count - texts.Count;
+        if (texts.Count == 0) { selectionError = "The selection contains no .txt files."; return; }
+        checking = true;
+        StateHasChanged();
+        var measured = new List<SelectedFile>();
+        foreach (var file in BatchRules.DefaultOrder(texts, file => file.Name))
+        {
+            int? characters = null;
+            string? error = null;
+            if (file.Size <= BatchRules.MaxFileBytes)
+            {
+                try
+                {
+                    await using var stream = file.OpenReadStream(BatchRules.MaxFileBytes, lifetime.Token);
+                    characters = await BatchRules.MeasureTextAsync(stream, lifetime.Token);
+                }
+                catch (IOException) { error = $"{file.Name}: file exceeds 1 MiB or could not be read"; }
+                catch (OperationCanceledException) { return; }
+            }
+            measured.Add(new(file, file.Name, file.Size, characters, error ?? BatchRules.FileError(file.Name, file.Size, characters)));
+        }
+        files = measured;
+        checking = false;
+    }
+
+    private void Move(int index, int offset)
+    {
+        var target = index + offset;
+        if (target < 0 || target >= files.Count) return;
+        (files[index], files[target]) = (files[target], files[index]);
+    }
+
+    private void Remove(int index) => files.RemoveAt(index);
+
+    private async Task StartBatch()
+    {
+        if (!CanStart) return;
+        starting = true;
+        // Each browser stream opens only when HttpClient reaches its multipart part (Learn: LazyBrowserFileStream).
+        var uploads = files.Select(file => new BatchUpload(file.Name, new LazyBrowserFileStream(file.File, BatchRules.MaxFileBytes))).ToList();
+        try
+        {
+            if (await Studio.CreateBatch(name.Trim(), voiceId, uploads) is { } created)
+            {
+                Studio.SelectedVoice = voiceId;
+                files = [];
+                skipped = 0;
+                name = "";
+                pageNumber = 1;
+                showBatches = true;
+                expanded.Add(created.BatchId);
+                await RefreshDetails();
+            }
+        }
+        finally
+        {
+            foreach (var upload in uploads) await upload.Content.DisposeAsync();
+            starting = false;
+        }
+    }
+
+    private async Task Toggle(string id)
+    {
+        if (!expanded.Remove(id))
+        {
+            expanded.Add(id);
+            await RefreshDetails();
+        }
+    }
+
+    private async Task Act(Func<Task<bool>> action)
+    {
+        if (acting) return;
+        acting = true;
+        try { await action(); }
+        finally { acting = false; }
+        await RefreshDetails();
+    }
+
+    private void Ask(BatchSummary batch, bool delete) { confirm = batch; confirmDelete = delete; }
+    private void CloseDialog() => confirm = null;
+
+    private async Task Confirm()
+    {
+        if (confirm is not { } batch) return;
+        var delete = confirmDelete;
+        confirm = null;
+        await Act(() => delete ? Studio.DeleteBatch(batch.BatchId) : Studio.StopBatch(batch.BatchId));
+        if (delete) { expanded.Remove(batch.BatchId); details.Remove(batch.BatchId); }
+    }
+
+    private static string FormatBytes(long bytes) => bytes >= 1024 * 1024 ? $"{bytes / 1024d / 1024d:0.0} MiB" : $"{Math.Max(1, bytes / 1024d):0} KB";
+
+    public override void Dispose()
+    {
+        Studio.Changed -= StudioChanged;
+        lifetime.Cancel();
+        lifetime.Dispose();
+        base.Dispose();
+    }
+}

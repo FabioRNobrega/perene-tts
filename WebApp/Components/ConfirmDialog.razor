@@ -1,0 +1,42 @@
+@* Component-local confirmation: focus starts on Cancel, Escape cancels, and nothing is sent until Confirm. *@
+@if (Open)
+{
+    <div class="modal-backdrop" @onclick="Cancel"></div>
+    <div class="modal card" role="alertdialog" aria-modal="true" aria-labelledby="@TitleId" aria-describedby="@BodyId" @onkeydown="KeyDown">
+        <div class="card-heading"><i class="bi @Icon" aria-hidden="true"></i><h2 id="@TitleId">@Title</h2></div>
+        <div id="@BodyId" class="modal-body">@ChildContent</div>
+        <div class="modal-actions">
+            <button type="button" class="button secondary" @ref="cancelButton" @onclick="Cancel">Cancel</button>
+            <button type="button" class="button @(Danger ? "danger" : "secondary")" @onclick="Confirm">@ConfirmLabel</button>
+        </div>
+    </div>
+}
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string ConfirmLabel { get; set; } = "Confirm";
+    [Parameter] public string Icon { get; set; } = "bi-exclamation-triangle";
+    [Parameter] public bool Danger { get; set; } = true;
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private readonly string id = Guid.NewGuid().ToString("N");
+    private ElementReference cancelButton;
+    private bool focusPending;
+    private string TitleId => $"confirm-title-{id}";
+    private string BodyId => $"confirm-body-{id}";
+
+    protected override void OnParametersSet() { if (Open) focusPending = true; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!Open || !focusPending) return;
+        focusPending = false;
+        try { await cancelButton.FocusAsync(); }
+        catch (JSException) { }
+    }
+
+    private Task KeyDown(KeyboardEventArgs args) => args.Key == "Escape" ? Cancel() : Task.CompletedTask;
+    private Task Cancel() => OnCancel.InvokeAsync();
+    private Task Confirm() => OnConfirm.InvokeAsync();
+}

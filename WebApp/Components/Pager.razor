@@ -1,0 +1,45 @@
+@* Shared list pager: a window of up to five pages plus the 5/10/25/50 page-size choice. *@
+@if (Total > PageSizes[0])
+{
+    var count = PageCount(Total, PageSize);
+    var start = Math.Clamp(Page - 2, 1, Math.Max(1, count - 4));
+    <nav class="pager" aria-label="@Label">
+        @if (count > 1)
+        {
+            <ul class="pagination">
+                <li><button aria-label="Previous page" disabled="@(Page == 1)" @onclick="() => PageChanged.InvokeAsync(Page - 1)"><i class="bi bi-chevron-left" aria-hidden="true"></i></button></li>
+                @foreach (var number in Enumerable.Range(start, Math.Min(5, count)))
+                {
+                    <li><button class="@(number == Page ? "active" : null)" aria-label="Page @number" aria-current="@(number == Page ? "page" : null)" @onclick="() => PageChanged.InvokeAsync(number)">@number</button></li>
+                }
+                <li><button aria-label="Next page" disabled="@(Page == count)" @onclick="() => PageChanged.InvokeAsync(Page + 1)"><i class="bi bi-chevron-right" aria-hidden="true"></i></button></li>
+            </ul>
+        }
+        <label class="page-size">Per page <select value="@PageSize" @onchange="SetPageSize">@foreach (var size in PageSizes) { <option value="@size" selected="@(size == PageSize)">@size</option> }</select></label>
+        <small>@((Page - 1) * PageSize + 1)–@(Math.Min(Page * PageSize, Total)) of @Total</small>
+    </nav>
+}
+@code {
+    public static readonly int[] PageSizes = [5, 10, 25, 50];
+    [Parameter, EditorRequired] public int Total { get; set; }
+    [Parameter] public int Page { get; set; } = 1;
+    [Parameter] public EventCallback<int> PageChanged { get; set; }
+    [Parameter] public int PageSize { get; set; } = 10;
+    [Parameter] public EventCallback<int> PageSizeChanged { get; set; }
+    [Parameter] public string Label { get; set; } = "Pages";
+
+    public static int PageCount(int total, int pageSize) => Math.Max(1, (total + pageSize - 1) / pageSize);
+
+    // Clamp in the caller before rendering so a refresh or search that shrinks the list never leaves an empty page selected.
+    public static IEnumerable<T> Slice<T>(List<T> items, ref int page, int pageSize)
+    {
+        page = Math.Clamp(page, 1, PageCount(items.Count, pageSize));
+        return items.Skip((page - 1) * pageSize).Take(pageSize);
+    }
+
+    private async Task SetPageSize(ChangeEventArgs args)
+    {
+        await PageSizeChanged.InvokeAsync(int.TryParse(args.Value?.ToString(), out var size) && PageSizes.Contains(size) ? size : 10);
+        await PageChanged.InvokeAsync(1);
+    }
+}

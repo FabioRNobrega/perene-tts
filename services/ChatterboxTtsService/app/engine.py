@@ -70,6 +70,8 @@ class SynthesisEngine(Protocol):
         paragraph_silence_ms: int,
         synthesis_seed: int,
         progress_callback: Callable[[int, int], None] | None = None,
+        *,
+        seed_offset: int = 0,
     ) -> SynthesisResult: ...
 
 
@@ -195,6 +197,8 @@ class ChatterboxEngine:
         paragraph_silence_ms: int,
         synthesis_seed: int,
         progress_callback: Callable[[int, int], None] | None = None,
+        *,
+        seed_offset: int = 0,
     ) -> SynthesisResult:
         self._require_ready()
 
@@ -207,7 +211,8 @@ class ChatterboxEngine:
                 raise RuntimeError("Voice conditioning has not been selected")
             waveforms = []
             for index, chunk in enumerate(chunks):
-                chunk_seed = synthesis_seed + index
+                # seed_offset lets a single-chunk call reproduce chunk N of a whole-text call.
+                chunk_seed = synthesis_seed + seed_offset + index
                 torch.manual_seed(chunk_seed)
                 random.seed(chunk_seed)
                 np.random.seed(chunk_seed)

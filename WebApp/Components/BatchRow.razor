@@ -1,0 +1,114 @@
+@* One batch as a single line (state, name, progress, actions) plus an expandable track list. *@
+@{
+    var batch = Batch;
+    var percent = BatchRules.Percent(batch);
+    var remaining = BatchRules.IsActive(batch.State) || batch.State == "paused" ? BatchRules.Remaining(batch) : null;
+}
+<li class="job-item" id="batch-@batch.BatchId">
+    <div class="job-row batch-row">
+        <span class="job-type"><span class="type-chip type-batch"><i class="bi bi-files" aria-hidden="true"></i> Batch</span></span>
+        <div class="job-info">
+            <strong title="@batch.Name">@batch.Name</strong>
+            <small>@batch.VoiceName · @StudioSession.LanguageName(batch.LanguageId)</small>
+        </div>
+        <div class="batch-progress">
+            <div class="batch-status-line">
+                <span class="@BatchRules.BadgeClass(batch.State)">@if (BatchRules.Animates(batch.State)) { <span class="spinner" aria-hidden="true"></span> }@BatchRules.StateLabel(batch.State)</span>
+                <small>@batch.TracksCompleted/@batch.TrackCount tracks · @BatchRules.PercentLabel(batch)</small>
+            </div>
+            <div class="progress-track" role="progressbar" aria-label="Progress for @batch.Name" aria-valuemin="0" aria-valuemax="100" aria-valuenow="@percent" aria-valuetext="@BatchRules.PercentLabel(batch) · @batch.TracksCompleted of @batch.TrackCount tracks"><div class="progress-fill @(BatchRules.Animates(batch.State) ? "animated" : null) @(batch.State is "paused" or "pausing" ? "paused" : null)" style="width:@BarWidth"></div></div>
+            <small class="batch-meta">
+                @if (batch.CurrentTrackNumber is { } current)
+                {
+                    <span title="@batch.CurrentTrackName">Track @current.ToString("000") · @batch.CurrentTrackName · chunk @batch.CurrentChunksDone/@batch.CurrentChunkCount</span>
+                }
+                else if (batch.Message is not null) { <span>@batch.Message</span> }
+                <span>Elapsed @BatchRules.FormatDuration(BatchRules.Elapsed(batch))@(remaining is { } left ? $" · About {BatchRules.FormatDuration(left)} left" : "")</span>
+            </small>
+        </div>
+        <div class="job-actions">
+            @if (BatchRules.CanPause(batch.State))
+            {
+                <button class="button secondary icon-button" title="Pause" aria-label="Pause @batch.Name" disabled="@Busy" @onclick="() => OnPause.InvokeAsync(batch)"><i class="bi bi-pause-fill" aria-hidden="true"></i></button>
+            }
+            @if (BatchRules.CanResume(batch.State))
+            {
+                <button class="button secondary icon-button" title="Resume" aria-label="Resume @batch.Name" disabled="@Busy" @onclick="() => OnResume.InvokeAsync(batch)"><i class="bi bi-play-fill" aria-hidden="true"></i></button>
+            }
+            @if (BatchRules.CanStop(batch.State))
+            {
+                <button class="button danger icon-button" title="Stop" aria-label="Stop @batch.Name" disabled="@Busy" @onclick="() => OnStop.InvokeAsync(batch)"><i class="bi bi-stop-fill" aria-hidden="true"></i></button>
+            }
+            @if (BatchRules.CanRetry(batch.State))
+            {
+                <button class="button secondary icon-button" title="Retry" aria-label="Retry @batch.Name" disabled="@Busy" @onclick="() => OnRetry.InvokeAsync(batch)"><i class="bi bi-arrow-repeat" aria-hidden="true"></i></button>
+            }
+            @if (batch.TracksCompleted > 0)
+            {
+                <a class="button secondary icon-button" href="@BatchRules.ArchiveUrl(batch.BatchId)" download title="Download all completed tracks" aria-label="Download all completed tracks of @batch.Name as ZIP"><i class="bi bi-file-earmark-zip" aria-hidden="true"></i></a>
+            }
+            @if (BatchRules.CanDelete(batch.State))
+            {
+                <button class="button secondary icon-button" title="Delete" aria-label="Delete @batch.Name" disabled="@Busy" @onclick="() => OnDelete.InvokeAsync(batch)"><i class="bi bi-trash" aria-hidden="true"></i></button>
+            }
+            <button class="button secondary icon-button" title="@(Expanded ? "Hide details" : "Show details")" aria-label="@(Expanded ? "Hide" : "Show") details for @batch.Name" aria-expanded="@(Expanded ? "true" : "false")" aria-controls="@DetailsId" @onclick="() => OnToggle.InvokeAsync(batch.BatchId)"><i class="bi @(Expanded ? "bi-chevron-up" : "bi-chevron-down")" aria-hidden="true"></i></button>
+        </div>
+    </div>
+    @if (Expanded)
+    {
+        <div class="job-details batch-details" id="@DetailsId">
+            <dl>
+                <dt>Voice</dt><dd>@batch.VoiceName · @StudioSession.LanguageName(batch.LanguageId)</dd>
+                <dt>Created</dt><dd>@batch.CreatedAt.UtcDateTime.ToString("dd MMM yyyy · HH:mm") UTC</dd>
+                @if (batch.Message is not null) { <dt>Status</dt><dd>@batch.Message</dd> }
+            </dl>
+            @if (Detail is null)
+            {
+                <p class="hint" role="status">Loading tracks…</p>
+            }
+            else
+            {
+                <ol class="track-list">
+                    @foreach (var track in Detail.Tracks)
+                    {
+                        <li class="track-item" @key="track.Number">
+                            <div class="track-row">
+                                <span class="track-number">@track.Number.ToString("000")</span>
+                                <div class="job-info">
+                                    <strong title="@track.OutputName">@track.OutputName</strong>
+                                    <small title="@track.DisplayName">@track.DisplayName@(track.DurationSeconds is { } seconds ? $" · {BatchRules.FormatDuration(TimeSpan.FromSeconds(seconds))}" : track.State is "running" or "pending" && track.ChunksDone > 0 ? $" · chunk {track.ChunksDone}/{track.ChunkCount}" : "")</small>
+                                </div>
+                                <span class="@BatchRules.BadgeClass(track.State)">@BatchRules.StateLabel(track.State)</span>
+                                @if (track.State == "completed")
+                                {
+                                    <AudioPlayer Src="@BatchRules.TrackUrl(batch.BatchId, track.Number)" Preload="none" />
+                                    <a class="button secondary icon-button" href="@BatchRules.TrackUrl(batch.BatchId, track.Number, download: true)" download title="Download MP3" aria-label="Download @track.OutputName"><i class="bi bi-download" aria-hidden="true"></i></a>
+                                }
+                                else if (BatchRules.CanRetryTrack(track.State))
+                                {
+                                    <button class="button secondary icon-button" title="Retry track" aria-label="Retry @track.OutputName" disabled="@Busy" @onclick="() => OnRetryTrack.InvokeAsync(track.Number)"><i class="bi bi-arrow-repeat" aria-hidden="true"></i></button>
+                                }
+                            </div>
+                            @if (track.Error is not null) { <p class="track-error">@track.Error</p> }
+                        </li>
+                    }
+                </ol>
+            }
+        </div>
+    }
+</li>
+@code {
+    [Parameter, EditorRequired] public BatchSummary Batch { get; set; } = default!;
+    [Parameter] public BatchDetail? Detail { get; set; }
+    [Parameter] public bool Expanded { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<string> OnToggle { get; set; }
+    [Parameter] public EventCallback<BatchSummary> OnPause { get; set; }
+    [Parameter] public EventCallback<BatchSummary> OnResume { get; set; }
+    [Parameter] public EventCallback<BatchSummary> OnStop { get; set; }
+    [Parameter] public EventCallback<BatchSummary> OnRetry { get; set; }
+    [Parameter] public EventCallback<BatchSummary> OnDelete { get; set; }
+    [Parameter] public EventCallback<int> OnRetryTrack { get; set; }
+    private string DetailsId => $"batch-details-{Batch.BatchId}";
+    private string BarWidth => BatchRules.BarWidth(Batch).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "%";
+}

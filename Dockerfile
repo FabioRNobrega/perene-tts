@@ -15,6 +15,16 @@ RUN dotnet restore WebApp/WebApp.csproj
 COPY WebApp/ WebApp/
 RUN dotnet publish WebApp/WebApp.csproj -c Release -o /out --no-restore
 
+# xUnit rules/client tests; test packages stay out of the published runtime image.
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS web-test
+WORKDIR /src
+COPY WebApp/WebApp.csproj WebApp/
+COPY WebApp.Tests/WebApp.Tests.csproj WebApp.Tests/
+RUN dotnet restore WebApp.Tests/WebApp.Tests.csproj
+COPY WebApp/ WebApp/
+COPY WebApp.Tests/ WebApp.Tests/
+RUN dotnet test WebApp.Tests/WebApp.Tests.csproj --no-restore
+
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /out/ ./

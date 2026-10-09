@@ -16,7 +16,7 @@ help:
 		'make docker-shell       Open a new .NET SDK shell' \
 		'make docker-exec        Open the running .NET SDK shell' \
 		'make dotnet ARGS=build  Run a dotnet command in the SDK container' \
-		'make test               Run isolated worker tests and compile the frontend' \
+		'make test               Run worker pytest, web xUnit tests, and compile the frontend' \
 		'make docker-check       Validate standard and Mac Compose configurations' \
 		'make get-url            Show the published browser and worker URLs' \
 		'Apple Metal: mac-setup, mac-worker, mac-up, mac-down'
@@ -44,6 +44,7 @@ dotnet:
 docker-test:
 	$(DOCKER_COMPOSE) --profile test build tests
 	$(DOCKER_COMPOSE) --profile test run --rm tests
+	docker build --target web-test --tag $(COMPOSE_PROJECT)-web-test .
 	docker build --target runtime --tag $(COMPOSE_PROJECT)-web-runtime .
 docker-check:
 	$(DOCKER_COMPOSE) config --quiet

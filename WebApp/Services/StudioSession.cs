@@ -10,6 +10,11 @@ public sealed class StudioSession(TtsClient client) : IAsyncDisposable
     public WorkerHealth? Health { get; private set; }
     public List<Voice> Voices { get; private set; } = [];
     public List<Creation> Creations { get; private set; } = [];
+    // Batch conversion runs in the worker; the circuit only caches summaries for display.
+    public List<BatchSummary> Batches { get; private set; } = [];
+    public bool BatchesLoaded { get; private set; }
+    public BatchSummary? ActiveBatch => BatchRules.ActiveBatch(Batches);
+    public bool BatchEnabled => Health?.BatchEnabled ?? true;
     public Job? Job { get; private set; }
     public bool Busy { get; private set; }
     public string? Error { get; private set; }
@@ -35,6 +40,8 @@ public sealed class StudioSession(TtsClient client) : IAsyncDisposable
             Health = await client.HealthAsync(lifetime.Token);
             Voices = await client.VoicesAsync(lifetime.Token);
             Creations = await client.CreationsAsync(lifetime.Token);
+            Batches = await client.BatchesAsync(lifetime.Token);
+            BatchesLoaded = true;
             if (Error == Unavailable) Error = null;
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
@@ -55,6 +62,40 @@ public sealed class StudioSession(TtsClient client) : IAsyncDisposable
     public Task CreateVoice(Stream stream, string extension, string name, string language) =>
         Run(() => client.CreateVoiceAsync(stream, extension, name, language, lifetime.Token));
     public Task Generate() => Run(() => client.SpeakAsync(SelectedVoice, SpeechText, lifetime.Token));
+    public async Task<BatchSummary?> CreateBatch(string name, string voiceId, IReadOnlyList<BatchUpload> files)
+    {
+        BatchSummary? created = null;
+        return await BatchAction(async () => created = await client.CreateBatchAsync(name, voiceId, files, lifetime.Token)) ? created : null;
+    }
+    public Task<bool> PauseBatch(string id) => BatchAction(() => client.PauseBatchAsync(id, lifetime.Token));
+    public Task<bool> ResumeBatch(string id) => BatchAction(() => client.ResumeBatchAsync(id, lifetime.Token));
+    public Task<bool> StopBatch(string id) => BatchAction(() => client.StopBatchAsync(id, lifetime.Token));
+    public Task<bool> RetryBatch(string id) => BatchAction(() => client.RetryBatchAsync(id, lifetime.Token));
+    public Task<bool> RetryTrack(string id, int number) => BatchAction(() => client.RetryTrackAsync(id, number, lifetime.Token));
+    public Task<bool> DeleteBatch(string id) => BatchAction(() => client.DeleteBatchAsync(id, lifetime.Token));
+    /// <summary>Track details for an expanded row; null when the batch is gone or the worker is unreachable.</summary>
+    public async Task<BatchDetail?> LoadBatch(string id)
+    {
+        try { return await client.BatchAsync(id, lifetime.Token); }
+        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException or FormatException) { return null; }
+    }
+    private async Task<bool> BatchAction(Func<Task> action)
+    {
+        try
+        {
+            Error = null;
+            await action();
+            await Refresh();
+            return true;
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return false; }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or TaskCanceledException)
+        {
+            Error = ex is InvalidOperationException ? ex.Message : "The connection was interrupted. Refresh and try again.";
+            Changed?.Invoke();
+            return false;
+        }
+    }
     private async Task Run(Func<Task<Job>> start)
     {
         if (Busy) return;

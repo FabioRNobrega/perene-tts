@@ -18,6 +18,7 @@ run)
     export TTS_DEVICE="${TTS_DEVICE:-auto}"
     export TTS_DATA_DIR="${TTS_DATA_DIR:-$PWD/data}"
     export HF_HOME="${HF_HOME:-$PWD/models}"
+    export TTS_BATCH_ENABLED="${TTS_BATCH_ENABLED:-true}"
     export PYTORCH_ENABLE_MPS_FALLBACK=1
     # Explicit opt-in binding for Docker Desktop to reach the native host worker.
     exec .venv/bin/python -m uvicorn app.main:app --host "${TTS_HOST:-0.0.0.0}" --port 5081 --workers 1

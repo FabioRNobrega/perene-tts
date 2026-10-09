@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 from .audio_validation import validate_reference, validate_output, pcm_wav_metrics
 from .chunking import chunk_text
 from .engine import SynthesisEngine, SynthesisError
+from .operation_gate import BusyError, OperationGate
 from .voice_store import LocalVoiceStore, VoiceCompatibility
 
 MODEL_REVISION = "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
@@ -23,16 +24,17 @@ MAX_UPLOAD = 20 * 1024 * 1024
 # Upload extension -> explicit FFmpeg demuxer; never let FFmpeg probe client input.
 REFERENCE_FORMATS = {".mp3": "mp3", ".wav": "wav"}
 MAX_TEXT = 5000
+CHUNK_CHARS = 280
+SENTENCE_SILENCE_MS = 180
+PARAGRAPH_SILENCE_MS = 420
+SYNTHESIS_SEED = 1234
+WAITING_FOR_BATCH = "Waiting for the batch to reach a safe point"
 PREVIEWS = {
     "en": "Hello! Welcome to PereneTTS. This is a quick voice test to hear how natural and clear my voice sounds.",
     "pt": "Olá! Bem-vindo ao PereneTTS. Este é um teste rápido de voz para ouvir como minha voz soa natural e clara.",
     "sv": "Hej! Välkommen till PereneTTS. Det här är ett snabbt rösttest för att höra hur naturlig och tydlig min röst låter.",
 }
 LOGGER = logging.getLogger(__name__)
-
-
-class BusyError(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -56,23 +58,30 @@ def canonical_id(value: str) -> str:
     return parsed
 
 
-def ffmpeg(*arguments: str) -> None:
+def ffmpeg(*arguments: str, timeout: int = 120) -> None:
     try:
         subprocess.run(
             ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *arguments],
-            check=True, capture_output=True, timeout=120,
+            check=True, capture_output=True, timeout=timeout,
         )
     except (subprocess.SubprocessError, OSError) as error:
         raise ValueError("Audio conversion failed. Use a readable MP3 or WAV recording.") from error
 
 
+def encode_mp3(wav: Path, mp3: Path, timeout: int = 120) -> None:
+    """Shared speech/batch encoder: libmp3lame at 192 kbps keeps quality the priority."""
+    ffmpeg("-i", str(wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(mp3), timeout=timeout)
+    if not mp3.is_file() or not mp3.stat().st_size:
+        raise RuntimeError("MP3 encoder produced no audio")
+
+
 class StudioService:
-    def __init__(self, root: Path, engine: SynthesisEngine):
+    def __init__(self, root: Path, engine: SynthesisEngine, gate: OperationGate | None = None):
         self.root = root.resolve()
         self.engine = engine
         self.store = LocalVoiceStore(self.root / "voices", self.root / "outputs")
         self.compatibility = VoiceCompatibility(SOURCE_REVISION, MODEL_REVISION, "multilingual-v3", 2)
-        self._gate = threading.Lock()
+        self.gate = gate or OperationGate()
         self._jobs_lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
         for name in ("voices", "outputs", "uploads"):
@@ -151,8 +160,7 @@ class StudioService:
     def _start(self, action) -> dict:
         if not self.engine.ready:
             raise SynthesisError("Model is not ready. Wait for loading or check worker logs.")
-        if not self._gate.acquire(blocking=False):
-            raise BusyError("Another operation is running. Please try again when it finishes.")
+        self.gate.reserve_interactive()
         job = Job(str(uuid4()))
         with self._jobs_lock:
             # Keep memory bounded; audio and voice artifacts remain on disk.
@@ -162,13 +170,16 @@ class StudioService:
         try:
             threading.Thread(target=self._run, args=(job.job_id, action), daemon=True).start()
         except Exception:
-            self._gate.release()
+            self.gate.release_interactive()
             raise
         return asdict(job)
 
     def _run(self, job_id, action):
         try:
-            action(job_id)
+            # A running batch keeps the model for at most its current chunk; this job then goes first.
+            with self.gate.interactive(lambda: self._update(job_id, message=WAITING_FOR_BATCH)):
+                self._update(job_id, message="Preparing audio")
+                action(job_id)
             self._update(job_id, status="completed", percent=100, message="Your audio is ready",
                          audio_url=f"/audio/{job_id}")
         except Exception as error:
@@ -177,7 +188,7 @@ class StudioService:
             message = str(error) if isinstance(error, ValueError) else "Audio generation failed. Check worker logs and retry."
             self._update(job_id, status="failed", error=message, message=message)
         finally:
-            self._gate.release()
+            self.gate.release_interactive()
 
     def _update(self, job_id, **values):
         with self._jobs_lock:
@@ -209,11 +220,22 @@ class StudioService:
         finally:
             upload.unlink(missing_ok=True)
 
+    def select_voice(self, voice_id: str) -> None:
+        """Load a saved voice's conditioning; the caller must hold the model through OperationGate."""
+        metadata = next((voice for voice in self.store.list_metadata() if voice.voice_id == voice_id), None)
+        if metadata is None:
+            raise KeyError("Voice not found")
+        decision = self.store.resolve(metadata.language_id, self.store.reference_path(voice_id),
+                                      self.compatibility, voice_id)
+        self._load(decision)
+
     def _load(self, decision):
+        self.gate.conditioning_owner = None
         validate_reference(decision.reference_path)
         if decision.status == "loaded":
             try:
                 self.engine.load_conditioning(decision.conditioning_path)
+                self.gate.conditioning_owner = decision.voice_id
                 return
             except SynthesisError:
                 decision = self.store.require_regeneration(decision)
@@ -223,28 +245,27 @@ class StudioService:
             self.engine.save_conditioning(temporary)
             self.engine.load_conditioning(temporary)
             self.store.publish(decision, temporary, self.compatibility)
+            self.gate.conditioning_owner = decision.voice_id
         finally:
             temporary.unlink(missing_ok=True)
 
     def _synthesize(self, job_id, language, text, voice_id):
-        decision = self.store.resolve(language, self.store.reference_path(voice_id), self.compatibility, voice_id)
         self._update(job_id, voice_id=voice_id, message="Loading saved voice", percent=10)
-        self._load(decision)
+        self.select_voice(voice_id)
         self._render(job_id, language, text, voice_id, "speech")
 
     def _render(self, job_id, language, text, voice_id, kind):
         with tempfile.TemporaryDirectory(dir=self.root / "outputs") as temporary:
             wav = Path(temporary) / "speech.wav"
             mp3 = Path(temporary) / "speech.mp3"
-            self.engine.synthesize(chunk_text(text, 280), wav, language, 180, 420, 1234,
+            self.engine.synthesize(chunk_text(text, CHUNK_CHARS), wav, language, SENTENCE_SILENCE_MS,
+                                   PARAGRAPH_SILENCE_MS, SYNTHESIS_SEED,
                                    lambda current, total: self._update(job_id,
                                    percent=25 + int(65 * current / total),
                                    message=f"Generating speech · {current}/{total}"))
             validate_output(wav)
             self._update(job_id, message="Encoding MP3", percent=95)
-            ffmpeg("-i", str(wav), "-codec:a", "libmp3lame", "-b:a", "192k", str(mp3))
-            if not mp3.is_file() or not mp3.stat().st_size:
-                raise RuntimeError("MP3 encoder produced no audio")
+            encode_mp3(wav, mp3)
             voice = next(voice for voice in self.voices() if voice["voice_id"] == voice_id)
             metadata = Path(temporary) / "creation.json"
             metadata.write_text(json.dumps({"job_id": job_id, "kind": kind,

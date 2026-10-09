@@ -10,6 +10,10 @@
     </div>
     <input class="search" aria-label="Search creations" placeholder="Search your creations…" @bind="search" @bind:event="oninput" @bind:after="() => pageNumber = 1" />
 </div>
+@if (!showVoices && batchFilter is not null)
+{
+    <div class="filter-chips"><button class="chip" @onclick="ClearBatchFilter" aria-label="Clear batch filter: @batchFilterName"><i class="bi bi-files" aria-hidden="true"></i> Showing batch @batchFilterName <i class="bi bi-x-lg" aria-hidden="true"></i></button></div>
+}
 @if (showVoices)
 {
     var voices = Studio.Voices.Where(voice => Matches(voice.Name, StudioSession.LanguageName(voice.LanguageId))).ToList();
@@ -19,37 +23,46 @@
     }
     else
     {
-        <ul class="job-list">@foreach (var voice in Paged(voices))
+        <ul class="job-list">@foreach (var voice in Pager.Slice(voices, ref pageNumber, pageSize))
         {
             <li class="job-item" @key="voice.VoiceId"><div class="job-row voice-row">
-                <span class="job-type"><i class="bi bi-mic" aria-hidden="true"></i> Voice</span>
+                <span class="job-type"><span class="type-chip type-voice"><i class="bi bi-mic" aria-hidden="true"></i> Voice</span></span>
                 <div class="job-info"><strong title="@voice.Name">@voice.Name</strong><small>@StudioSession.LanguageName(voice.LanguageId)</small></div>
                 <div class="job-actions"><button class="button secondary" @onclick="() => UseVoice(voice.VoiceId)">Use this voice <i class="bi bi-arrow-right" aria-hidden="true"></i></button></div>
             </div></li>
         }</ul>
-        @Pager(voices.Count)
+        <Pager Total="voices.Count" @bind-Page="pageNumber" @bind-PageSize="pageSize" Label="Creation pages" />
     }
 }
 else
 {
-    var creations = Studio.Creations.Where(creation => Matches(creation.VoiceName, creation.Text, StudioSession.LanguageName(creation.LanguageId))).ToList();
+    var creations = Studio.Creations.Where(creation => BatchRules.MatchesBatch(creation, batchFilter)
+        && Matches(creation.VoiceName, creation.Text, StudioSession.LanguageName(creation.LanguageId), creation.BatchName ?? "", creation.SourceName ?? "")).ToList();
     @if (creations.Count == 0)
     {
         <div class="empty-state card"><i class="bi bi-collection-play" aria-hidden="true"></i><h2>No audio found</h2><p>Your voice tests and generated audio will appear here. Try another search or create something new.</p><a class="button secondary" href="generate-audio">Generate audio</a></div>
     }
     else
     {
-        <ul class="job-list">@foreach (var creation in Paged(creations))
+        <ul class="job-list">@foreach (var creation in Pager.Slice(creations, ref pageNumber, pageSize))
         {
             var open = expanded.Contains(creation.JobId);
             var detailsId = $"creation-details-{creation.JobId}";
+            var batchTrack = BatchRules.IsBatchTrack(creation);
+            var type = BatchRules.CreationType(creation);
             <li class="job-item" @key="creation.JobId">
                 <div class="job-row">
-                    <span class="job-type"><i class="bi @(creation.Kind == "preview" ? "bi-mic" : "bi-soundwave")" aria-hidden="true"></i> @(creation.Kind == "preview" ? "Voice test" : "Audio")</span>
-                    <div class="job-info"><strong title="@creation.VoiceName">@creation.VoiceName</strong><small>@StudioSession.LanguageName(creation.LanguageId) · @Created(creation)</small></div>
-                    <AudioPlayer Src="@($"/audio/{creation.JobId}")" Preload="none" />
+                    <span class="job-type"><span class="type-chip @type.CssClass"><i class="bi @type.Icon" aria-hidden="true"></i> @type.Label</span></span>
+                    <div class="job-info">
+                        <strong title="@creation.VoiceName">@creation.VoiceName</strong><small>@StudioSession.LanguageName(creation.LanguageId) · @Created(creation)</small>
+                        @if (batchTrack)
+                        {
+                            <button class="tag" title="Show only tracks from @creation.BatchName" aria-label="Show only tracks from batch @creation.BatchName" @onclick="() => FilterBatch(creation)">@BatchRules.TagLabel(creation)</button>
+                        }
+                    </div>
+                    <AudioPlayer Src="@BatchRules.AudioUrl(creation)" Preload="none" />
                     <div class="job-actions">
-                        <a class="button secondary icon-button" href="@($"/audio/{creation.JobId}?download=1")" download title="Download MP3" aria-label="Download MP3 of @creation.VoiceName"><i class="bi bi-download" aria-hidden="true"></i></a>
+                        <a class="button secondary icon-button" href="@BatchRules.AudioUrl(creation, download: true)" download title="Download MP3" aria-label="Download MP3 of @creation.VoiceName"><i class="bi bi-download" aria-hidden="true"></i></a>
                         <button class="button secondary icon-button" title="@(open ? "Hide details" : "Show details")" aria-label="@(open ? "Hide" : "Show") details for @creation.VoiceName" aria-expanded="@(open ? "true" : "false")" aria-controls="@detailsId" @onclick="() => Toggle(creation.JobId)"><i class="bi @(open ? "bi-chevron-up" : "bi-chevron-down")" aria-hidden="true"></i></button>
                     </div>
                 </div>
@@ -59,55 +72,33 @@ else
                         <dt>Voice</dt><dd>@creation.VoiceName</dd>
                         <dt>Language</dt><dd>@StudioSession.LanguageName(creation.LanguageId)</dd>
                         <dt>Created</dt><dd>@Created(creation)</dd>
-                        <dt>Text</dt><dd class="creation-text">@(string.IsNullOrEmpty(creation.Text) ? "Saved audio from an earlier session." : creation.Text)</dd>
+                        @if (batchTrack)
+                        {
+                            <dt>Source file</dt><dd>@creation.SourceName</dd>
+                            <dt>Batch</dt><dd>@creation.BatchName · track @(creation.TrackNumber?.ToString("000")) of @(creation.TrackCount?.ToString("000")) · <a href="@BatchRules.OpenBatchUrl(creation.BatchId!)">Open batch</a></dd>
+                        }
+                        else
+                        {
+                            <dt>Text</dt><dd class="creation-text">@(string.IsNullOrEmpty(creation.Text) ? "Saved audio from an earlier session." : creation.Text)</dd>
+                        }
                     </dl>
                 }
             </li>
         }</ul>
-        @Pager(creations.Count)
+        <Pager Total="creations.Count" @bind-Page="pageNumber" @bind-PageSize="pageSize" Label="Creation pages" />
     }
 }
 @code {
-    private static readonly int[] PageSizes = [5, 10, 25, 50];
     private readonly HashSet<string> expanded = new(StringComparer.Ordinal);
     private bool showVoices;
     private string search = "";
+    private string? batchFilter, batchFilterName;
     private int pageNumber = 1, pageSize = 10;
     private bool Matches(params string[] values) => values.Any(value => value.Contains(search.Trim(), StringComparison.OrdinalIgnoreCase));
     private void UseVoice(string id) { Studio.SelectedVoice = id; Navigation.NavigateTo("generate-audio"); }
     private void SetTab(bool voices) { showVoices = voices; pageNumber = 1; }
     private void Toggle(string id) { if (!expanded.Remove(id)) expanded.Add(id); }
+    private void FilterBatch(Creation creation) { batchFilter = creation.BatchId; batchFilterName = creation.BatchName; pageNumber = 1; }
+    private void ClearBatchFilter() { batchFilter = batchFilterName = null; pageNumber = 1; }
     private static string Created(Creation creation) => creation.CreatedAt.UtcDateTime.ToString("dd MMM yyyy · HH:mm") + " UTC";
-    private int PageCount(int total) => Math.Max(1, (total + pageSize - 1) / pageSize);
-
-    // Clamp here so a refresh or search that shrinks the list never leaves an empty page selected.
-    private IEnumerable<T> Paged<T>(List<T> items)
-    {
-        pageNumber = Math.Clamp(pageNumber, 1, PageCount(items.Count));
-        return items.Skip((pageNumber - 1) * pageSize).Take(pageSize);
-    }
-
-    private RenderFragment Pager(int total) => __builder =>
-    {
-        if (total <= PageSizes[0]) return;
-        var count = PageCount(total);
-        var start = Math.Clamp(pageNumber - 2, 1, Math.Max(1, count - 4));
-        <nav class="pager" aria-label="Creation pages">
-            @if (count > 1)
-            {
-                <ul class="pagination">
-                    <li><button aria-label="Previous page" disabled="@(pageNumber == 1)" @onclick="() => pageNumber--"><i class="bi bi-chevron-left" aria-hidden="true"></i></button></li>
-                    @foreach (var number in Enumerable.Range(start, Math.Min(5, count)))
-                    {
-                        <li><button class="@(number == pageNumber ? "active" : null)" aria-label="Page @number" aria-current="@(number == pageNumber ? "page" : null)" @onclick="() => pageNumber = number">@number</button></li>
-                    }
-                    <li><button aria-label="Next page" disabled="@(pageNumber == count)" @onclick="() => pageNumber++"><i class="bi bi-chevron-right" aria-hidden="true"></i></button></li>
-                </ul>
-            }
-            <label class="page-size">Per page <select value="@pageSize" @onchange="SetPageSize">@foreach (var size in PageSizes) { <option value="@size" selected="@(size == pageSize)">@size</option> }</select></label>
-            <small>@((pageNumber - 1) * pageSize + 1)–@(Math.Min(pageNumber * pageSize, total)) of @total</small>
-        </nav>
-    };
-
-    private void SetPageSize(ChangeEventArgs args) { pageSize = int.TryParse(args.Value?.ToString(), out var size) && PageSizes.Contains(size) ? size : 10; pageNumber = 1; }
 }
