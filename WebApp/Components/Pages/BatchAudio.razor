@@ -1,5 +1,6 @@
 @page "/batch-audio"
 @inherits StudioComponent
+@inject IHostShell Shell
 <PageTitle>Batch audio · PereneTTS</PageTitle>
 <h1 class="visually-hidden">Batch audio</h1>
 <section class="tab-shell">
@@ -30,17 +31,28 @@
             <div class="upload batch-pickers">
                 <i class="bi bi-folder2-open" aria-hidden="true"></i>
                 <strong class="picker-title">Add your book’s .txt files</strong>
-                @* Native inputs stay focusable but hidden; the labels are the visible, aligned buttons. *@
-                <div class="picker-row">
-                    <div class="picker">
-                        <InputFile id="batch-folder" class="picker-input" OnChange="ChooseFiles" webkitdirectory multiple disabled="@Locked" />
-                        <label for="batch-folder" class="button secondary picker-button"><i class="bi bi-folder2" aria-hidden="true"></i> Choose folder</label>
+                @if (Shell.IsDesktop)
+                {
+                    @* Desktop: native dialogs; the same labels, icons and focus order as the browser pickers. *@
+                    <div class="picker-row">
+                        <button type="button" id="batch-folder" class="button secondary picker-button" disabled="@Locked" @onclick="PickFolder"><i class="bi bi-folder2" aria-hidden="true"></i> @(choosing == Picker.Folder ? "Choosing…" : "Choose folder")</button>
+                        <button type="button" id="batch-files" class="button secondary picker-button" disabled="@Locked" @onclick="PickFiles"><i class="bi bi-file-earmark-text" aria-hidden="true"></i> @(choosing == Picker.Files ? "Choosing…" : "Choose .txt files")</button>
                     </div>
-                    <div class="picker">
-                        <InputFile id="batch-files" class="picker-input" OnChange="ChooseFiles" accept=".txt,text/plain" multiple disabled="@Locked" />
-                        <label for="batch-files" class="button secondary picker-button"><i class="bi bi-file-earmark-text" aria-hidden="true"></i> Choose .txt files</label>
+                }
+                else
+                {
+                    @* Native inputs stay focusable but hidden; the labels are the visible, aligned buttons. *@
+                    <div class="picker-row">
+                        <div class="picker">
+                            <InputFile id="batch-folder" class="picker-input" OnChange="ChooseFiles" webkitdirectory multiple disabled="@Locked" />
+                            <label for="batch-folder" class="button secondary picker-button"><i class="bi bi-folder2" aria-hidden="true"></i> Choose folder</label>
+                        </div>
+                        <div class="picker">
+                            <InputFile id="batch-files" class="picker-input" OnChange="ChooseFiles" accept=".txt,text/plain" multiple disabled="@Locked" />
+                            <label for="batch-files" class="button secondary picker-button"><i class="bi bi-file-earmark-text" aria-hidden="true"></i> Choose .txt files</label>
+                        </div>
                     </div>
-                </div>
+                }
                 <small>Up to 200 UTF-8 .txt files · 1 MiB and 200,000 characters each · 10 MiB in total</small>
             </div>
             <div role="status" aria-live="polite">
@@ -128,7 +140,8 @@ else
     private const int MaxSelection = 1000;
     [SupplyParameterFromQuery(Name = "batch")] public string? BatchQuery { get; set; }
     [SupplyParameterFromQuery(Name = "tab")] public string? TabQuery { get; set; }
-    private sealed record SelectedFile(IBrowserFile File, string Name, long Size, int? Characters, string? Error);
+    private enum Picker { None, Folder, Files }
+    private sealed record SelectedFile(ISourceFile File, string Name, long Size, int? Characters, string? Error);
     private readonly HashSet<string> expanded = new(StringComparer.Ordinal);
     private readonly Dictionary<string, BatchDetail> details = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource lifetime = new();
@@ -136,10 +149,11 @@ else
     private string name = "", voiceId = "";
     private int skipped, pageNumber = 1, pageSize = 10;
     private bool checking, starting, acting, confirmDelete, showBatches;
+    private Picker choosing;
     private string? selectionError;
     private BatchSummary? confirm;
 
-    private bool Locked => checking || starting;
+    private bool Locked => checking || starting || choosing != Picker.None;
     private long TotalBytes => files.Sum(file => file.Size);
     private List<string> ValidationMessages =>
         new[] { selectionError, BatchRules.NameError(name), BatchRules.SelectionError(files.Count, TotalBytes) }
@@ -197,19 +211,58 @@ else
         if (expanded.Count > 0) StateHasChanged();
     }
 
-    private async Task ChooseFiles(InputFileChangeEventArgs args)
+    private Task ChooseFiles(InputFileChangeEventArgs args)
+    {
+        if (args.FileCount > MaxSelection) return Select([], 0, tooMany: true);
+        var chosen = args.GetMultipleFiles(MaxSelection);
+        var texts = chosen.Where(file => BatchRules.IsTextFile(file.Name)).Select(file => (ISourceFile)new BrowserSourceFile(file)).ToList();
+        return Select(texts, chosen.Count - texts.Count, tooMany: false);
+    }
+
+    // Desktop: folders are read recursively in the host (symlinked folders are not followed); paths never leave it.
+    private async Task PickFolder()
+    {
+        choosing = Picker.Folder;
+        try
+        {
+            if (await Shell.PickFolderAsync() is not { } folder) return;
+            var selection = await Task.Run(() => LocalSourceFiles.Enumerate(folder));
+            choosing = Picker.None;
+            await Select(selection.Files, selection.Skipped, selection.TooMany);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { files = []; selectionError = "The folder could not be read. Choose it again."; }
+        finally { choosing = Picker.None; }
+    }
+
+    private async Task PickFiles()
+    {
+        choosing = Picker.Files;
+        try
+        {
+            var paths = await Shell.PickFilesAsync(FileFilter.Text, multiple: true);
+            if (paths.Count == 0) return;
+            if (paths.Count > MaxSelection) { choosing = Picker.None; await Select([], 0, tooMany: true); return; }
+            var texts = paths.Where(BatchRules.IsTextFile).Select(path => (ISourceFile)new LocalSourceFile(path)).ToList();
+            choosing = Picker.None;
+            await Select(texts, paths.Count - texts.Count, tooMany: false);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { files = []; selectionError = "The files could not be read. Choose them again."; }
+        finally { choosing = Picker.None; }
+    }
+
+    private async Task Select(IReadOnlyList<ISourceFile> texts, int skippedCount, bool tooMany)
     {
         files = [];
         skipped = 0;
         selectionError = null;
-        if (args.FileCount > MaxSelection)
+        if (tooMany)
         {
             selectionError = $"Choose at most {BatchRules.MaxFiles} .txt files.";
             return;
         }
-        var chosen = args.GetMultipleFiles(MaxSelection);
-        var texts = chosen.Where(file => BatchRules.IsTextFile(file.Name)).ToList();
-        skipped = chosen.Count - texts.Count;
+        skipped = skippedCount;
         if (texts.Count == 0) { selectionError = "The selection contains no .txt files."; return; }
         checking = true;
         StateHasChanged();
@@ -222,10 +275,11 @@ else
             {
                 try
                 {
-                    await using var stream = file.OpenReadStream(BatchRules.MaxFileBytes, lifetime.Token);
+                    await using var stream = file.Open(BatchRules.MaxFileBytes, lifetime.Token);
                     characters = await BatchRules.MeasureTextAsync(stream, lifetime.Token);
                 }
-                catch (IOException) { error = $"{file.Name}: file exceeds 1 MiB or could not be read"; }
+                catch (Exception readError) when (readError is IOException or UnauthorizedAccessException)
+                { error = $"{file.Name}: file exceeds 1 MiB or could not be read"; }
                 catch (OperationCanceledException) { return; }
             }
             measured.Add(new(file, file.Name, file.Size, characters, error ?? BatchRules.FileError(file.Name, file.Size, characters)));
@@ -247,8 +301,10 @@ else
     {
         if (!CanStart) return;
         starting = true;
-        // Each browser stream opens only when HttpClient reaches its multipart part (Learn: LazyBrowserFileStream).
-        var uploads = files.Select(file => new BatchUpload(file.Name, new LazyBrowserFileStream(file.File, BatchRules.MaxFileBytes))).ToList();
+        // Each stream opens only when HttpClient reaches its multipart part (Learn: lazy browser file streams).
+        // Only display names and contents are uploaded; local paths never leave the host.
+        var uploads = files.Select(file => new BatchUpload(file.Name,
+            new LazyOpenStream(() => file.File.Open(BatchRules.MaxFileBytes, CancellationToken.None), file.Size))).ToList();
         try
         {
             if (await Studio.CreateBatch(name.Trim(), voiceId, uploads) is { } created)

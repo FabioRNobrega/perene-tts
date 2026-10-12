@@ -1,0 +1,30 @@
+@* Web mode keeps the browser's <a download>; desktop mode saves through a native dialog (AudioExport). *@
+@inject IHostShell Shell
+@inject AudioExport Export
+@if (Shell.IsDesktop)
+{
+    <button type="button" class="@CssClass" title="@Title" aria-label="@AriaLabel" aria-busy="@(saving ? "true" : null)" disabled="@saving" @onclick="Save"><i class="bi @Icon" aria-hidden="true"></i>@LabelText</button>
+}
+else
+{
+    <a class="@CssClass" href="@Href" download title="@Title" aria-label="@AriaLabel"><i class="bi @Icon" aria-hidden="true"></i>@LabelText</a>
+}
+@code {
+    [Parameter, EditorRequired] public string Href { get; set; } = "";
+    [Parameter, EditorRequired] public string SuggestedName { get; set; } = "";
+    [Parameter] public string? Label { get; set; }
+    [Parameter] public string Icon { get; set; } = "bi-download";
+    [Parameter] public string CssClass { get; set; } = "button secondary";
+    [Parameter] public string? Title { get; set; }
+    [Parameter] public string? AriaLabel { get; set; }
+    private bool saving;
+    private string? LabelText => Label is null ? null : $" {Label}";
+
+    private async Task Save()
+    {
+        if (saving) return;
+        saving = true;
+        try { await Export.SaveAsync(Href, SuggestedName); }
+        finally { saving = false; }
+    }
+}

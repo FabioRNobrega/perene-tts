@@ -1,10 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
-using Microsoft.AspNetCore.Components.Forms;
 namespace PereneTts.Services;
 
 // Microsoft Learn (Blazor file uploads, .NET 10): when an Interactive Server component forwards several
-// files, open each browser stream only when HttpClient reads that multipart part.
-internal sealed class LazyBrowserFileStream(IBrowserFile file, int maxAllowedSize) : Stream
+// files, open each browser stream only when HttpClient reads that multipart part. Local desktop files use the same path.
+internal sealed class LazyOpenStream(Func<Stream> open, long length) : Stream
 {
     private Stream? underlyingStream;
     private bool isDisposed;
@@ -12,7 +11,7 @@ internal sealed class LazyBrowserFileStream(IBrowserFile file, int maxAllowedSiz
     public override bool CanRead => true;
     public override bool CanSeek => false;
     public override bool CanWrite => false;
-    public override long Length => file.Size;
+    public override long Length => length;
     public override long Position
     {
         get => underlyingStream?.Position ?? 0;
@@ -30,7 +29,7 @@ internal sealed class LazyBrowserFileStream(IBrowserFile file, int maxAllowedSiz
         return underlyingStream.ReadAsync(buffer, cancellationToken);
     }
     [MemberNotNull(nameof(underlyingStream))]
-    private void EnsureStreamIsOpen() => underlyingStream ??= file.OpenReadStream(maxAllowedSize);
+    private void EnsureStreamIsOpen() => underlyingStream ??= open();
     protected override void Dispose(bool disposing)
     {
         if (isDisposed) return;

@@ -1,0 +1,12 @@
+#!/bin/sh
+# C compiler for macOS arm64 (deployment target 14.0) from Linux, through zig.
+# zig's linker always links dynamically and rejects the explicit -dynamic flag that FFmpeg's darwin configure adds.
+for arg; do
+    shift
+    case "$arg" in
+        -Wl,-dynamic) continue ;;
+        -Wl,-dynamic,*) arg="-Wl,${arg#-Wl,-dynamic,}" ;;
+    esac
+    set -- "$@" "$arg"
+done
+exec zig cc -target aarch64-macos.14.0 "$@"

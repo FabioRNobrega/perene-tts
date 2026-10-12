@@ -26,6 +26,9 @@ public static class BatchRules
 
     public static string OutputName(string batchName, int number) => $"{batchName.Trim()} {number:000}.mp3";
 
+    /// <summary>Suggested name for the Download all ZIP in the desktop save dialog.</summary>
+    public static string ArchiveName(string batchName) => $"{batchName.Trim()}.zip";
+
     public static bool IsTextFile(string name) => name.EndsWith(".txt", StringComparison.OrdinalIgnoreCase);
 
     public static string? NameError(string? name)

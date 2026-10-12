@@ -2,6 +2,7 @@
 @implements IDisposable
 @inject StudioSession Studio
 @inject NavigationManager Navigation
+@inject IHostShell Shell
 <a class="skip-link" href="#main-content">Skip to content</a>
 <div class="app-shell @(light ? "light" : "")">
     <aside class="sidebar" aria-label="Primary navigation">
@@ -25,21 +26,66 @@
             {
                 <div class="alert" role="alert"><span>@Studio.Error</span><button class="quiet" @onclick="() => Studio.SetError(null)">Dismiss</button></div>
             }
+            <div class="notice-region" role="status" aria-live="polite">
+                @if (Studio.Notice is not null)
+                {
+                    <div class="notice"><span><i class="bi bi-check-circle" aria-hidden="true"></i> @Studio.Notice</span><button class="quiet" @onclick="() => Studio.SetNotice(null)">Dismiss</button></div>
+                }
+            </div>
             @Body
             <GenerationOutput />
         </ChildContent><ErrorContent><div class="alert" role="alert">The studio encountered an error. <a href="/">Reload the studio</a>.</div></ErrorContent></ErrorBoundary>
     </main>
+    @* Inside the themed shell so the dialog follows the light/dark appearance. *@
+    <ConfirmDialog Open="@(closing is not null)" Title="@(closing is null ? "" : DesktopRules.Title(closing))" ConfirmLabel="@(closing is null ? "" : DesktopRules.ConfirmLabel(closing))"
+                   CancelLabel="@DesktopRules.KeepWorking" Icon="bi-box-arrow-right" OnCancel="KeepWorking" OnConfirm="ConfirmClose">
+        @if (closing?.Kind == CloseKind.ConfirmStopBatches)
+        {
+            <p>Quitting stops @(closing.Batches.Count == 1 ? "this conversion" : "these conversions"):</p>
+            <ul>@foreach (var batch in closing.Batches) { <li>@batch.Name</li> }</ul>
+            <p class="hint">@DesktopRules.TracksKept</p>
+        }
+        @if (closing?.GenerationRunning == true) { <p>@DesktopRules.GenerationLost</p> }
+    </ConfirmDialog>
 </div>
 @code {
     private bool light;
     private ErrorBoundary? boundary;
+    private CloseDecision? closing;
     protected override void OnInitialized()
     {
         Studio.Changed += Changed;
         Navigation.LocationChanged += Navigated;
+        Shell.CloseRequested += CloseRequested;
+    }
+    // Desktop: the window asks before closing while work would be lost; the page acknowledges so the host does not ask too.
+    private Task CloseRequested(CloseRequest request) => InvokeAsync(async () =>
+    {
+        request.Acknowledge();
+        await Studio.Refresh();
+        // An unreachable worker has nothing left to stop cleanly.
+        var decision = Studio.Health is null ? null : DesktopRules.Decide(Studio.Busy, Studio.Batches);
+        if (decision is null || decision.Kind == CloseKind.CloseNow) { Shell.CompleteClose(); return; }
+        closing = decision;
+        StateHasChanged();
+    });
+    private void KeepWorking() => closing = null;
+    private async Task ConfirmClose()
+    {
+        closing = null;
+        await Studio.Refresh();
+        if (Studio.Health is null) { Shell.CompleteClose(); return; }
+        foreach (var batch in Studio.Batches.Where(batch => DesktopRules.BlocksClose(batch.State)).ToList())
+            if (!await Studio.StopBatch(batch.BatchId)) return;
+        if (Studio.Batches.Any(batch => DesktopRules.BlocksClose(batch.State)))
+        {
+            Studio.SetError("A conversion is still running. Try closing again.");
+            return;
+        }
+        Shell.CompleteClose();
     }
     protected override void OnAfterRender(bool firstRender) { if (firstRender) Studio.Start(); }
     private void Changed() => _ = InvokeAsync(StateHasChanged);
     private void Navigated(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args) => boundary?.Recover();
-    public void Dispose() { Studio.Changed -= Changed; Navigation.LocationChanged -= Navigated; }
+    public void Dispose() { Studio.Changed -= Changed; Navigation.LocationChanged -= Navigated; Shell.CloseRequested -= CloseRequested; }
 }

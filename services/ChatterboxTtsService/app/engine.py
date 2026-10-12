@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
 import random
@@ -29,6 +30,8 @@ TEMPERATURE = 0.8
 REPETITION_PENALTY = 1.2
 MIN_P = 0.05
 TOP_P = 1.0
+MODEL_MANIFEST = "model-manifest.json"
+BUNDLED_MODEL_ERROR = "The bundled voice model is missing or damaged. Reinstall Perene TTS."
 
 
 class SynthesisError(RuntimeError):
@@ -83,10 +86,13 @@ class ChatterboxEngine:
         model_revision: str,
         model_name: str = "multilingual-v3",
         device: str = "cpu",
+        model_dir: Path | None = None,
     ) -> None:
         if model_name not in ("multilingual-v3", "nano"):
             raise ValueError("Unsupported Chatterbox engine model")
         self.device = device
+        # Desktop app: weights ship inside the bundle, so loading never downloads.
+        self.model_dir = model_dir
         self.model_revision = model_revision
         self.model_name = model_name
         self._model = None
@@ -110,8 +116,6 @@ class ChatterboxEngine:
                 return
             try:
                 with suppress_upstream_future_warnings():
-                    from huggingface_hub import snapshot_download
-
                     LOGGER.info(
                         "Loading %s on %s from model revision %s",
                         self.model_name,
@@ -120,6 +124,7 @@ class ChatterboxEngine:
                     )
                     if self.model_name == "nano":
                         from chatterbox.tts_turbo import ChatterboxTurboTTS
+                        from huggingface_hub import snapshot_download
 
                         checkpoint_dir = snapshot_download(
                             repo_id=NANO_MODEL_REPOSITORY,
@@ -141,12 +146,17 @@ class ChatterboxEngine:
                     else:
                         from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
-                        checkpoint_dir = snapshot_download(
-                            repo_id=MODEL_REPOSITORY,
-                            repo_type="model",
-                            revision=self.model_revision,
-                            allow_patterns=MODEL_FILES,
-                        )
+                        if self.model_dir is not None:
+                            checkpoint_dir = str(verify_bundled_model(self.model_dir, self.model_revision))
+                        else:
+                            from huggingface_hub import snapshot_download
+
+                            checkpoint_dir = snapshot_download(
+                                repo_id=MODEL_REPOSITORY,
+                                repo_type="model",
+                                revision=self.model_revision,
+                                allow_patterns=MODEL_FILES,
+                            )
                         self._model = ChatterboxMultilingualTTS.from_local(
                             checkpoint_dir,
                             device=self.device,
@@ -268,6 +278,25 @@ class ChatterboxEngine:
     def _require_ready(self) -> None:
         if not self.ready:
             raise SynthesisError(self.load_error or "Chatterbox model is still loading")
+
+
+def verify_bundled_model(model_dir: Path, model_revision: str) -> Path:
+    """Cheap startup check of a bundled model directory: repository, revision, and each file's size.
+
+    SHA-256 digests are verified once at build time; hashing about 3 GB on every launch would delay the engine.
+    """
+    try:
+        manifest = json.loads((model_dir / MODEL_MANIFEST).read_text(encoding="utf-8"))
+        files = manifest["files"]
+        if manifest["repository"] != MODEL_REPOSITORY or manifest["revision"] != model_revision:
+            raise ValueError("bundled model identity does not match")
+        for name in MODEL_FILES:
+            if (model_dir / name).stat().st_size != int(files[name]["size"]):
+                raise ValueError(f"bundled model file {name} has the wrong size")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        LOGGER.error("Bundled model check failed in %s: %s", model_dir, error)
+        raise SynthesisError(BUNDLED_MODEL_ERROR) from error
+    return model_dir
 
 
 def _concise_error(error: Exception) -> str:

@@ -45,7 +45,7 @@
             }
             @if (batch.TracksCompleted > 0)
             {
-                <a class="button secondary icon-button" href="@BatchRules.ArchiveUrl(batch.BatchId)" download title="Download all completed tracks" aria-label="Download all completed tracks of @batch.Name as ZIP"><i class="bi bi-file-earmark-zip" aria-hidden="true"></i></a>
+                <DownloadButton CssClass="button secondary icon-button" Href="@BatchRules.ArchiveUrl(batch.BatchId)" SuggestedName="@BatchRules.ArchiveName(batch.Name)" Icon="bi-file-earmark-zip" Title="Download all completed tracks" AriaLabel="@($"Download all completed tracks of {batch.Name} as ZIP")" />
             }
             @if (BatchRules.CanDelete(batch.State))
             {
@@ -82,7 +82,7 @@
                                 @if (track.State == "completed")
                                 {
                                     <AudioPlayer Src="@BatchRules.TrackUrl(batch.BatchId, track.Number)" Preload="none" />
-                                    <a class="button secondary icon-button" href="@BatchRules.TrackUrl(batch.BatchId, track.Number, download: true)" download title="Download MP3" aria-label="Download @track.OutputName"><i class="bi bi-download" aria-hidden="true"></i></a>
+                                    <DownloadButton CssClass="button secondary icon-button" Href="@BatchRules.TrackUrl(batch.BatchId, track.Number, download: true)" SuggestedName="@BatchRules.OutputName(batch.Name, track.Number)" Title="Download MP3" AriaLabel="@($"Download {track.OutputName}")" />
                                 }
                                 else if (BatchRules.CanRetryTrack(track.State))
                                 {

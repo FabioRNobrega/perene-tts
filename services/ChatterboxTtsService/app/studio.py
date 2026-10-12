@@ -61,7 +61,8 @@ def canonical_id(value: str) -> str:
 def ffmpeg(*arguments: str, timeout: int = 120) -> None:
     try:
         subprocess.run(
-            ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *arguments],
+            # The desktop app runs its bundled FFmpeg; Docker and mac-worker use the one on PATH.
+            [os.getenv("TTS_FFMPEG") or "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *arguments],
             check=True, capture_output=True, timeout=timeout,
         )
     except (subprocess.SubprocessError, OSError) as error:

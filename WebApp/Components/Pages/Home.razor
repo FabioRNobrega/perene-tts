@@ -1,5 +1,6 @@
 @page "/"
 @inherits StudioComponent
+@inject IHostShell Shell
 <PageTitle>Create a voice · PereneTTS</PageTitle>
 <header class="page-header"><h1>Create a voice</h1></header>
 <div class="workspace">
@@ -7,7 +8,16 @@
         <div class="card-heading"><i class="bi bi-mic" aria-hidden="true"></i><h2>Voice details</h2></div>
         <label for="voice-name">Voice name</label><input id="voice-name" @bind="name" maxlength="80" placeholder="e.g. My reading voice" disabled="@Studio.Busy" />
         <label for="language">Recording language</label><select id="language" @bind="language" disabled="@Studio.Busy"><option value="en">English</option><option value="pt">Português</option><option value="sv">Svenska</option></select>
-        <div class="upload"><i class="bi bi-cloud-arrow-up" aria-hidden="true"></i><label for="reference">Choose your MP3 or WAV recording</label><InputFile id="reference" OnChange="ChooseFile" accept=".mp3,.wav,audio/mpeg,audio/wav" disabled="@Studio.Busy" /><small>@(file?.Name ?? "3–60 seconds · up to 20 MiB")</small></div>
+        <div class="upload"><i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
+            @if (Shell.IsDesktop)
+            {
+                <button type="button" id="reference" class="button secondary picker-button" disabled="@(Studio.Busy || choosing)" @onclick="PickFile">@(choosing ? "Choosing…" : "Choose your MP3 or WAV recording")</button>
+            }
+            else
+            {
+                <label for="reference">Choose your MP3 or WAV recording</label><InputFile id="reference" OnChange="ChooseFile" accept=".mp3,.wav,audio/mpeg,audio/wav" disabled="@Studio.Busy" />
+            }
+            <small>@(file?.Name ?? "3–60 seconds · up to 20 MiB")</small></div>
         <button class="primary" @onclick="CreateVoice" disabled="@(Studio.Busy || Studio.Health?.ModelReady != true || file is null || string.IsNullOrWhiteSpace(name))"><i class="bi bi-mic" aria-hidden="true"></i> Create voice &amp; hear sample</button>
     </section>
     <div class="support-cards">
@@ -16,26 +26,42 @@
     </div>
 </div>
 @code {
-    private IBrowserFile? file;
+    private const int MaxRecordingBytes = 20 * 1024 * 1024;
+    private ISourceFile? file;
     private string name = "", language = "en";
-    private void ChooseFile(InputFileChangeEventArgs args)
+    private bool choosing;
+    private void ChooseFile(InputFileChangeEventArgs args) => Accept(new BrowserSourceFile(args.File));
+    // Desktop: the native dialog's path stays in the host; only the file name and contents are uploaded.
+    private async Task PickFile()
+    {
+        choosing = true;
+        try
+        {
+            if ((await Shell.PickFilesAsync(FileFilter.Recording, multiple: false)).FirstOrDefault() is { } path)
+                Accept(new LocalSourceFile(path));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { Studio.SetError("The recording could not be read. Choose your recording again."); }
+        finally { choosing = false; }
+    }
+    private void Accept(ISourceFile candidate)
     {
         file = null;
-        var extension = Path.GetExtension(args.File.Name);
+        var extension = Path.GetExtension(candidate.Name);
         if (!(extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase) || extension.Equals(".wav", StringComparison.OrdinalIgnoreCase))
-            || args.File.Size > 20 * 1024 * 1024 || args.File.Size == 0)
+            || candidate.Size > MaxRecordingBytes || candidate.Size == 0)
             Studio.SetError("Choose a nonempty MP3 or WAV recording up to 20 MiB.");
-        else { file = args.File; Studio.SetError(null); }
+        else { file = candidate; Studio.SetError(null); }
     }
     private async Task CreateVoice()
     {
         if (file is null || Studio.Busy) return;
         try
         {
-            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
+            await using var stream = file.Open(MaxRecordingBytes, CancellationToken.None);
             await Studio.CreateVoice(stream, Path.GetExtension(file.Name).ToLowerInvariant(), name.Trim(), language);
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException)
+        catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException)
         { Studio.SetError("The recording could not be read. Choose your recording again."); }
     }
 }

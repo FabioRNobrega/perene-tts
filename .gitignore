@@ -28,3 +28,7 @@ exports/
 *.swp
 *.log
 Thumbs.db
+
+# macOS desktop app build cache and outputs
+build/
+dist/

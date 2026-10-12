@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import hmac
 import io
 import logging
 import os
@@ -93,6 +94,22 @@ class RequestSizeLimit:
         await self.app(scope, bounded_receive, send)
 
 
+class ApiToken:
+    """Desktop mode: only the host process that launched this worker, holding its per-launch token, may call it."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        supplied = dict(scope.get("headers", [])).get(b"x-perene-token", b"")
+        if not hmac.compare_digest(supplied, self.token):
+            return await JSONResponse(status_code=401, content={"detail": "Unauthorized"})(scope, receive, send)
+        await self.app(scope, receive, send)
+
+
 class _ZipSink(io.RawIOBase):
     """Non-seekable sink: zipfile writes data descriptors, and the response streams each block."""
 
@@ -141,7 +158,8 @@ def create_app(studio: StudioService | None = None, batches: BatchService | None
         runner = None
         if studio is None:
             device = select_device(os.getenv("TTS_DEVICE", "auto"))
-            engine = ChatterboxEngine(MODEL_REVISION, device=device)
+            model_dir = os.getenv("TTS_MODEL_DIR")
+            engine = ChatterboxEngine(MODEL_REVISION, device=device, model_dir=Path(model_dir) if model_dir else None)
             app.state.studio = StudioService(Path(os.getenv("TTS_DATA_DIR", "/data")), engine)
             app.state.batches = BatchService(app.state.studio, enabled=batch_enabled())
             app.state.batches.recover()
@@ -167,6 +185,9 @@ def create_app(studio: StudioService | None = None, batches: BatchService | None
 
     app = FastAPI(title="Perene TTS Worker", lifespan=lifespan)
     app.add_middleware(RequestSizeLimit)
+    # Unset in Docker and mac-worker modes; added last so it runs first.
+    if token := os.getenv("TTS_API_TOKEN", "").strip():
+        app.add_middleware(ApiToken, token=token)
     if studio is not None:
         app.state.studio = studio
         app.state.batches = batches or BatchService(studio)

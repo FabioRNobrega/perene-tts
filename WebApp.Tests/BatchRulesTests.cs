@@ -208,4 +208,10 @@ public sealed class BatchRulesTests
         new(Guid.NewGuid().ToString(), "Lumky", Guid.NewGuid().ToString(), "Reader", "en", state, null,
             DateTimeOffset.UnixEpoch.AddDays(created), DateTimeOffset.UnixEpoch, tracks, completed, 0, chunkCount, chunksDone,
             seconds, timed, null, null, null, null);
+
+    [Theory]
+    [InlineData("In Milton Lumky Territory", "In Milton Lumky Territory.zip")]
+    [InlineData("  Book  ", "Book.zip")]
+    public void ArchiveNameUsesTheTrimmedBatchName(string name, string expected) =>
+        Assert.Equal(expected, BatchRules.ArchiveName(name));
 }

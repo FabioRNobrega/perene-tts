@@ -7,3 +7,5 @@
 **/models
 .git
 .env
+build
+dist

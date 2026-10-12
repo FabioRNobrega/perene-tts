@@ -81,6 +81,52 @@ The native worker listens on port 5081 on the host so Docker Desktop can reach `
 
 Pure Docker mode (`make docker-run-bg`) uses CPU and does not force amd64 emulation on Apple Silicon. ARM64 and native MPS need target-device validation; only Linux x86-64 can be exercised on this development Steam Deck. Stop the regular Docker stack with `make docker-down` before switching modes because both web modes use the same port.
 
+## Desktop app (macOS)
+
+Perene TTS can also be built as a double-clickable **Perene TTS.app** for Apple-silicon Macs (M1 or later, macOS 14 Sonoma or later). It runs fully offline: the .NET runtime, the voice engine (Python worker), the model weights and FFmpeg are all inside the app, and nothing is downloaded when it runs. The window shows the same studio. Downloads open a native Save dialog (starting in `~/Music`), and the file pickers open native dialogs.
+
+### Build (in Docker, on any machine)
+
+The app is built entirely inside Docker, so nothing is installed on the Mac: no .NET SDK, Python, Homebrew or Xcode tools. The builder image (`packaging/macos/Dockerfile`) holds every build tool. It downloads parts that already exist for Apple-silicon Macs (a standalone Python 3.11, the PyPI wheels including PyTorch with Metal, and the .NET runtime) and cross-compiles the rest (a minimal LGPL FFmpeg via zig). It then ad-hoc signs the app with `rcodesign`.
+
+```sh
+make desktop-mac     # writes dist/Perene TTS.app and dist/Perene-TTS-macos-arm64.zip
+```
+
+This works the same on the Mac's Docker Desktop or on Linux (for example the Steam Deck). The first build needs the internet and about 15 GB of free disk space (the model alone is about 3 GB). Downloads are cached in `build/macos/`, so later builds are faster. `make desktop-mac STEPS="ffmpeg_build"` reruns a single step. The build prints the size of each part, the app and the zip. It fails if any binary isn't arm64, needs a macOS newer than 14.0, or links a library from outside the app. `make test` and the Docker workflows are unchanged.
+
+On the Mac (nothing to install):
+
+```sh
+make desktop-run     # opens dist/Perene TTS.app
+make desktop-smoke   # optional: Apple's signature check, then an offline check of the bundled engine (DEVICE=cpu to force CPU)
+```
+
+`desktop-smoke` uses the app's own bundled Python and macOS's built-in `codesign` and `sandbox-exec`.
+
+### Install and share
+
+Unzip `Perene-TTS-macos-arm64.zip` and drag **Perene TTS** to Applications. An app you built yourself opens directly. Friends who receive the zip (AirDrop, USB drive, cloud link) see "Apple could not verify…" the first time, because the app is ad-hoc signed, not notarized (that needs a paid Apple Developer account). They click **Done**, then open **System Settings → Privacy & Security** and click **Open Anyway** once. Later launches open directly. The Terminal alternative is `xattr -dr com.apple.quarantine "/Applications/Perene TTS.app"`. Both steps are in `How to open.txt` inside the zip.
+
+### Data, logs, updates
+
+| What | Where |
+| --- | --- |
+| Voices, creations, batches | `~/Library/Application Support/Perene TTS/studio` |
+| Web keys and the single-instance lock | `~/Library/Application Support/Perene TTS/` |
+| Logs (`worker.log`, `worker.previous.log`) | `~/Library/Logs/Perene TTS` |
+| Caches | `~/Library/Caches/Perene TTS` |
+
+The first launch starts empty; Docker and `make mac-worker` data are not imported. To update, replace the app in Applications; your data stays. To uninstall, move the app to the Trash, and optionally run `rm -rf ~/Library/Application\ Support/Perene\ TTS ~/Library/Logs/Perene\ TTS ~/Library/Caches/Perene\ TTS`.
+
+### Limitations
+
+- Apple silicon only; there is no Intel, Linux or Windows build yet.
+- Closing the window (or ⌘Q) while a batch is converting asks first. "Stop conversion and quit" keeps completed tracks; use Retry later to convert the rest. A paused batch stays paused. On log out, restart or shut down there is no question: the voice engine shuts down cleanly, and interrupted batches resume on the next launch.
+- The app is not notarized and does not use the hardened runtime. macOS therefore does not block library injection into it, which is accepted for a personal, hand-shared build.
+- The app is large (about 5 GB, mostly the model and PyTorch).
+- If the voice engine stops unexpectedly, the studio says so; close and reopen Perene TTS. Details are in `worker.log`.
+
 ## Commands
 
 | Command | Purpose |
@@ -100,6 +146,9 @@ Pure Docker mode (`make docker-run-bg`) uses CPU and does not force amd64 emulat
 | `make mac-setup` | Create native macOS Python environment and install pinned dependencies. |
 | `make mac-worker` | Run native worker with automatic device selection. |
 | `make mac-up` / `make mac-down` | Start/stop Docker web host for the native worker. |
+| `make desktop-mac` | Build the offline macOS app and zip inside Docker (any machine). |
+| `make desktop-run` / `make desktop-smoke` | On the Mac: open the built app / check its signature and run its offline engine check. |
+| `make desktop-icon` | Re-render the app icon PNG from `packaging/macos/perene-tts.svg` (Docker). |
 
 The original `build`, `up`, `down`, `logs`, `ps`, and `check` names remain aliases; canonical commands match perene-archive.
 

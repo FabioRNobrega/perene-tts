@@ -10,10 +10,11 @@
   - [Shell abstraction and UI changes](#shell-abstraction-and-ui-changes)
   - [Closing the window](#closing-the-window)
   - [Directories, logs, and single instance](#directories-logs-and-single-instance)
-  - [Packaging the .app and DMG](#packaging-the-app-and-dmg)
+  - [Packaging the .app and zip (in Docker)](#packaging-the-app-and-zip-in-docker)
   - [Signing and sharing without a paid account](#signing-and-sharing-without-a-paid-account)
   - [Icon](#icon)
   - [Design principles applied](#design-principles-applied)
+  - [Implementation notes (2026-10-12)](#implementation-notes-2026-10-12)
 - [Component Breakdown](#component-breakdown)
 - [Dependencies](#dependencies)
 - [External / Vendor Documentation Evidence](#external--vendor-documentation-evidence)
@@ -23,11 +24,11 @@
 ## Summary
 Desktop mode is a second host mode of the existing `WebApp`. It starts from inside `Perene TTS.app` (or with `--desktop`) and does four things:
 - locks a single instance
-- launches the PyInstaller-packaged FastAPI worker as a loopback sidecar protected by a per-launch token
+- launches the bundled FastAPI worker (a standalone Python running `app.desktop`) as a loopback sidecar protected by a per-launch token
 - runs the unchanged Blazor Interactive Server UI on a random loopback port
 - shows the UI in a Photino window, which uses the system WKWebView.
 
-Everything (the .NET runtime, worker, model weights and FFmpeg) ships in one ad-hoc signed `.app`, built natively on the Mac by `make desktop-mac` and wrapped in a DMG for friends. The Docker and `mac-*` workflows keep their current composition through a shared `StudioApp` registration.
+Everything (the .NET runtime, worker, model weights and FFmpeg) ships in one ad-hoc signed `.app`, built entirely inside Docker by `make desktop-mac` and zipped for friends. Nothing is installed on the Mac. The Docker and `mac-*` workflows keep their current composition through a shared `StudioApp` registration.
 
 Compared with the earlier Linux AppImage version of this plan, the worker and host work is the same. The bundled WebKitGTK and its spike gate are gone, because macOS provides WKWebView. The new work is the native build script, Mach-O compatibility checks and ad-hoc signing.
 
@@ -45,7 +46,7 @@ Compared with the earlier Linux AppImage version of this plan, the worker and ho
      - not trigger a macOS firewall prompt for loopback-only listeners.
 
      Also record `file libPhotino.Native.dylib` (it must be arm64). **If ⌘Q bypasses the handler, stop and ask the user about the fallback** (Open Questions).
-   - **1b. Worker, signing and sharing.** Build the PyInstaller `onedir` worker plus the model directory plus FFmpeg, place them in the spike `.app`, sign it inside-out and verify it. Then:
+   - **1b. Worker, signing and sharing.** Build the app with `make desktop-mac` (Docker) and copy it to the Mac. Check it with `codesign --verify --deep --strict`. Then:
      - run FR23's smoke script with outbound network denied, on `cpu` and on `mps`, and record bundle size, cold start, time to `model_ready`, speech speed and peak RSS for each
      - run the Mach-O compatibility check (FR18)
      - copy the app with `ditto`, add a quarantine attribute as a download would, open it, approve **Open Anyway**, and confirm the worker and FFmpeg subprocesses start.
@@ -60,7 +61,7 @@ Compared with the earlier Linux AppImage version of this plan, the worker and ho
 Perene TTS.app (read-only, ad-hoc signed)
 └─ Contents/MacOS/WebApp  (CFBundleExecutable; desktop mode detected from the bundle path)
    ├─ InstanceLock          ~/Library/Application Support/Perene TTS/instance.lock
-   ├─ WorkerProcess ─ spawn Contents/MacOS/worker/perene-worker   (stdin pipe kept open)
+   ├─ WorkerProcess ─ spawn Contents/Resources/python/bin/python3.11 -I -X pycache_prefix=<Caches> -m app.desktop   (stdin pipe kept open)
    │      env: TTS_API_TOKEN, TTS_DATA_DIR, TTS_MODEL_DIR, TTS_FFMPEG, TTS_DEVICE,
    │           PYTORCH_ENABLE_MPS_FALLBACK=1, HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1,
    │           HF_HOME, NUMBA_CACHE_DIR
@@ -71,7 +72,7 @@ Perene TTS.app (read-only, ad-hoc signed)
 There is still exactly one worker process and one batch runner thread, as AGENTS.md requires. The worker HTTP API, `TtsClient` and every Razor page stay the same. Only the base address, a header, and a few download and picker controls change in desktop mode.
 
 ### Worker changes
-- **`app/desktop.py` (new; this is the PyInstaller entry script):**
+- **`app/desktop.py` (new; the bundled Python runs it as `-m app.desktop`):**
   1. Create the socket (`socket.create_server(("127.0.0.1", 0))`) and print `PERENE_WORKER_READY port=<n>` with flush. The socket already accepts connections into its backlog, so the host may connect before Uvicorn's loop runs.
   2. Start a daemon thread that reads `sys.stdin.buffer` until EOF and then sets `server.should_exit = True`.
   3. Run `uvicorn.Server(uvicorn.Config(app.main.app, workers=1, log_config=…)).run(sockets=[sock])`.
@@ -87,16 +88,16 @@ There is still exactly one worker process and one batch runner thread, as AGENTS
   - `verify_bundled_model` is new and pure. It reads `model-manifest.json` (`{"repository","revision","files":{name:{"size","sha256"}}}`) and checks the repository, the revision and every file in `MODEL_FILES` by existence and size. It never hashes 3 GB at startup; SHA-256 is verified once at build time.
   - Failures raise `SynthesisError("The bundled voice model is missing or damaged. Reinstall Perene TTS.")`. The existing `_load_error` path surfaces this through `/health`.
 - **`app/studio.py`:** `ffmpeg()` uses `os.getenv("TTS_FFMPEG", "ffmpeg")` as argv[0]. Nothing else changes, so encode settings and validation stay identical.
-- **Bundled FFmpeg:** a pinned FFmpeg release built from source on the Mac with `MACOSX_DEPLOYMENT_TARGET=14.0`, `--arch=arm64`, `--disable-autodetect` (so it never picks up AudioToolbox, VideoToolbox or Homebrew libraries), `--disable-everything --disable-gpl --enable-libmp3lame` and a static LAME built with the same deployment target. It enables only:
+- **Bundled FFmpeg:** a pinned FFmpeg release cross-compiled in the builder with zig (`zig cc -target aarch64-macos.14.0`, no Apple SDK needed), `--enable-cross-compile --target-os=darwin --arch=aarch64 --disable-asm --enable-pthreads`, `--disable-autodetect` (so it never picks up AudioToolbox, VideoToolbox or Homebrew libraries), `--disable-everything --disable-gpl --enable-libmp3lame` and a static LAME built with the same deployment target. It enables only:
   - decoders `mp3*`, `pcm_*`
   - demuxers `mp3`, `wav`
   - encoders `libmp3lame`, `pcm_s16le`
   - muxers `mp3`, `wav`
   - parser `mpegaudio`
-  - filters `aresample`, `aformat`, `anull`
+  - filters `aresample`, `aformat`, `anull`, `abuffer`, `abuffersink`
   - protocols `file`, `pipe`.
 
-  `otool -L` must list only `/usr/lib` system libraries. The build runs the existing pytest suite with this binary first on `PATH` and `TTS_FFMPEG` set, which proves every command in `studio.py` and the tests works. The result is LGPL-2.1+ with its license texts and a source pointer. **Fallback:** if a needed component is missing, add it to the configure list. Never use a GPL or Homebrew build without recording the license change.
+  It must link only `/usr/lib/libSystem`. A macOS binary cannot run in the Linux builder, so `make desktop-smoke` on the Mac exercises the decode and encode commands in `studio.py`. The result is LGPL-2.1+ with its license texts and a source pointer. **Fallback:** if a needed component is missing, add it to the configure list. Never use a GPL or Homebrew build without recording the license change.
 
 ### Desktop host in WebApp
 Desktop mode stays inside `WebApp` rather than a new project. There is one composition root and the static web assets pipeline is unchanged (`MapStaticAssets`, `RequiresAspNetWebAssets`). The only new package is `Photino.NET` 4.0.16. Its native library is never loaded in Docker mode.
@@ -193,20 +194,21 @@ Components depend only on `IHostShell`.
 - `InstanceLock` opens `instance.lock` with `FileShare.None` and keeps the stream open for the process lifetime. On macOS, .NET implements this with an advisory `flock`, which the kernel releases on exit. Launch Services already brings a running app to the front on a second double-click, so the lock mainly covers Terminal launches.
 - In the app, `StudioSession.HealthText` and `Error` keep their existing wording ("Voice engine ready · MPS" or "· CPU" already comes from `/health`). Only FR10's "stopped unexpectedly" message is new. It is fed by an optional injected `IWorkerStatus`, which web mode does not register.
 
-### Packaging the .app and DMG
-`packaging/macos/build.sh` is a Bash script called by `make desktop-mac`. It works under `build/macos/` (ignored), keeps a download cache there between runs, and writes the results to `dist/`.
+### Packaging the .app and zip (in Docker)
+Nothing is installed on the Mac. `make desktop-mac` builds the builder image `packaging/macos/Dockerfile` and runs `packaging/macos/build.sh` in it with the repository mounted. The image is based on the .NET 10 SDK and adds Python, llvm, zig 0.14.1, rcodesign 0.29.0, Pillow and huggingface_hub, all pinned and checksum-verified. The build works on any Docker host (the Mac's Docker Desktop on arm64, or x86-64 Linux), because every output targets macOS arm64. Downloads are cached in `build/macos/`, results go to `dist/`, and `STEPS="…"` reruns single steps.
 
 | Step | Output |
 | --- | --- |
-| `preflight` | Requires `Darwin` + `arm64`, `dotnet --version` 10.x, python.org Python 3.11 (`/Library/Frameworks/Python.framework/Versions/3.11`), `xcode-select -p`, and about 25 GB free disk. Names anything missing and stops. |
-| `model` | Build venv runs `snapshot_download(ResembleAI/chatterbox, MODEL_REVISION, MODEL_FILES)` into the cache → `model/` plus `model-manifest.json` with size and SHA-256 per file, then re-hashes every file |
-| `ffmpeg` | Pinned FFmpeg and LAME source tarballs (SHA-256 checked) → minimal LGPL `ffmpeg` for arm64, deployment target 14.0, plus licenses |
-| `worker` | python.org 3.11 venv in `build/macos/venv`. Installs `requirements.lock.txt` and then `--no-deps requirements.txt`, as `scripts/mac-worker.sh setup` does (PyPI's macOS arm64 torch 2.6.0 wheel includes MPS). Adds pinned PyInstaller and pytest from `packaging/macos/requirements-build.txt`. Runs pytest against the bundled FFmpeg, then `pyinstaller packaging/macos/worker.spec` → `perene-worker` (`onedir`). |
-| `webapp` | `dotnet publish WebApp/WebApp.csproj -c Release -r osx-arm64 --self-contained -o build/macos/app` (folder publish, not single-file) |
-| `bundle` | Assemble `Perene TTS.app` (layout below), write `Info.plist` from `packaging/macos/Info.plist.in` and `VERSION`, build `AppIcon.icns` |
-| `check` | For every Mach-O file: `lipo -archs` includes arm64, `vtool -show-build` minimum OS ≤ 14.0, and `otool -L` lists only `@rpath`/`@loader_path`/`@executable_path` or `/usr/lib`/`/System` libraries. `plutil -lint Info.plist`. |
-| `sign` | Ad-hoc sign every Mach-O file inside-out, then the bundle (see below). `codesign --verify --deep --strict --verbose=2`. |
-| `dmg` | Stage the app, an `Applications` symlink and `How to open.txt`. `hdiutil create -volname "Perene TTS" -srcfolder <stage> -format ULFO` → `dist/Perene-TTS-macos-arm64.dmg`. Print `du -sh` per component, the app and the DMG. |
+| `preflight` | Confirms it runs in the builder (dotnet, zig, rcodesign, llvm, zip). |
+| `python_runtime` | python-build-standalone CPython 3.11.17 `aarch64-apple-darwin` (stripped, relocatable, minimum macOS 11), SHA-256 pinned. Replaces PyInstaller, which cannot cross-compile. |
+| `packages` | `pip install --target … --platform macosx_14_0_arm64 --python-version 3.11 --abi cp311 --only-binary=:all: --no-deps` of `requirements.lock.txt` plus `requirements.txt`. PyPI has macOS arm64 wheels for 110 of the 111 locked packages, torch 2.6.0 (with MPS) among them. `antlr4-python3-runtime` and the Chatterbox source are pure Python and are built into `py3-none-any` wheels first. |
+| `model` | `snapshot_download` → `model/` plus `model-manifest.json` (size and SHA-256), then every file is re-hashed. |
+| `ffmpeg_build` | LAME and FFmpeg cross-compiled with zig (above), then the configuration is checked for `--enable-libmp3lame` and no `--enable-gpl`. |
+| `webapp` | `dotnet publish -c Release -r osx-arm64 --self-contained` from a copy of `WebApp/`, so no `bin/` or `obj/` lands in the source tree. Run on Linux, the SDK does not sign the apphost; the `sign` step does. |
+| `bundle` | Assemble the layout below, write `Info.plist` from `Info.plist.in` and `VERSION`, and build `AppIcon.icns` with Pillow. |
+| `check` | `llvm-objdump --macho` on every Mach-O file: arm64 slice present, `minos` ≤ 14.0, and dependencies only `@rpath`/`@loader_path`/`@executable_path`, `/usr/lib` or `/System`. |
+| `sign` | `rcodesign sign` (ad-hoc, nested binaries first, then the bundle seal), then `rcodesign print-signature-info` must show `ADHOC` for WebApp, ffmpeg and python3.11. `rcodesign verify` does not handle ad-hoc signatures, so Apple's `codesign --verify --deep --strict` runs on the Mac in `make desktop-smoke`. |
+| `package` | `zip -ry` (keeps Python's symlinks) of the app plus `How to open.txt` → `dist/Perene-TTS-macos-arm64.zip`. A DMG needs `hdiutil`, which only exists on macOS. |
 
 **Bundle layout:**
 ```
@@ -214,34 +216,28 @@ Perene TTS.app/Contents/
 ├── Info.plist
 ├── MacOS/
 │   ├── WebApp                  CFBundleExecutable (.NET apphost, self-contained osx-arm64)
-│   ├── *.dll, *.dylib, libPhotino.Native.dylib, wwwroot/, appsettings.json, *.staticwebassets.endpoints.json
-│   ├── worker/perene-worker    PyInstaller onedir (+ _internal/)
-│   └── ffmpeg                  minimal LGPL FFmpeg
+│   ├── *.dll, *.dylib, Photino.Native.dylib, wwwroot/, *.staticwebassets.endpoints.json
+│   └── ffmpeg                  minimal LGPL FFmpeg (zig cross-compiled)
 └── Resources/
     ├── AppIcon.icns
+    ├── python/                 standalone CPython 3.11; site-packages holds the wheels and the worker's app/ package
     ├── model/                  weights + model-manifest.json
     └── licenses/               THIRD-PARTY-NOTICES.md + license texts
 ```
-Weights stay uncompressed in `Resources`, so model loading reads plain files from the SSD. If Phase 1b shows `codesign` rejects the worker's non-code files under `Contents/MacOS`, the worker moves to `Contents/Resources/worker` and `DesktopPaths` follows.
+Python lives in `Resources`, because dotted folders such as `*.dist-info` under `Contents/MacOS` would be treated as nested bundles when signing. The worker runs isolated (`-I`), so only the bundled packages load. Its bytecode goes to `~/Library/Caches/Perene TTS/pycache` (`-X pycache_prefix`), and numba's cache goes to `NUMBA_CACHE_DIR`, so nothing is written into the signed bundle.
 
-- **`worker.spec`:**
-  - entry `services/ChatterboxTtsService/app/desktop.py`
-  - `collect_all` for `chatterbox`, `perth`, `s3tokenizer`, `librosa`, `pykakasi` and `spacy_pkuseg` (refined in Phase 1b)
-  - `excludes` for `gradio`, `gradio_client`, `pytest`, `pre_commit`, `virtualenv`, `nodeenv`, `identify`, `cfgv` and `IPython`, which trims dev-only packages without a second lock file
-  - `target_arch="arm64"`, `noarchive=False`, no UPX, and no PyInstaller `BUNDLE` step (the script assembles the app).
-- **Python source:** the python.org installer is required because its binaries target old macOS versions. Homebrew's Python is built for the Mac it was installed on, so friends on an older macOS could not run the app. The `check` step enforces this.
 - **Makefile targets:**
-  - `desktop-mac`: `bash packaging/macos/build.sh` (Darwin only).
-  - `desktop-smoke`: runs `packaging/macos/smoke.py` (stdlib only, with the system `/usr/bin/python3`) against `dist/Perene TTS.app`, launching the bundled worker under `sandbox-exec` with a profile that denies outbound network except loopback. If `sandbox-exec` is unavailable, the target stops and explains how to rerun with Wi-Fi off and `SMOKE_NO_SANDBOX=1`.
+  - `desktop-mac`: build the builder image, then run `build.sh` in it (any machine).
+  - `desktop-smoke` (on the Mac): `codesign --verify --deep --strict`, then `packaging/macos/smoke.py` with the app's own bundled Python. It launches the worker under `sandbox-exec` with a profile that denies outbound network except loopback. If `sandbox-exec` is unavailable, rerun with Wi-Fi off and `SMOKE_NO_SANDBOX=1`.
   - `desktop-run`: `open "dist/Perene TTS.app"`.
-  - `desktop-icon`: renders `AppIcon-1024.png` from the SVG in a Docker container with `rsvg-convert` (any machine).
+  - `desktop-icon`: renders `AppIcon-1024.png` from the SVG in a Docker container with `rsvg-convert`.
 - `build/` and `dist/` are added to `.gitignore` and `.dockerignore`.
 
 ### Signing and sharing without a paid account
 - **Why ad-hoc is enough:** Apple silicon refuses to run arm64 code with no signature at all. An ad-hoc signature proves the files are intact, not who made them. A build made on this Mac carries no quarantine attribute, so Gatekeeper never checks it.
-- **Order:** PyInstaller and the .NET SDK already ad-hoc sign some binaries, but files copied into the bundle must be re-covered. The script signs every Mach-O file found under `Contents/` (deepest paths first) with `codesign --force --sign - --timestamp=none`, then signs the bundle itself without `--deep`. It does not pass `--options runtime`, so the hardened runtime is off and neither .NET (`allow-jit`) nor Python needs entitlements.
-- **Friends:** AirDrop, browsers and Mail add `com.apple.quarantine` to the DMG, and the copied app inherits it. On first open, macOS says it "could not verify" the app. On macOS 15 and 26, Control-click → Open no longer bypasses this; the friend uses System Settings → Privacy & Security → **Open Anyway** once. `How to open.txt` and the README also give the Terminal alternative, `xattr -dr com.apple.quarantine "/Applications/Perene TTS.app"`. "Damaged and can't be opened" means the signature is broken, which the `check` and `sign` steps prevent.
-- **App Translocation:** a quarantined app opened from the DMG or Downloads runs from a random read-only path. The app never writes into its bundle, so it still works, but the instructions say to drag it to Applications first.
+- **Order:** wheels and the standalone Python arrive already signed, but the .NET apphost published on Linux does not, and a bundle seal is needed. `rcodesign sign` (no certificate, so ad-hoc) re-signs every nested Mach-O file and then seals the bundle, like `codesign --force --sign -`. The hardened runtime is off, so neither .NET (`allow-jit`) nor Python needs entitlements.
+- **Friends:** AirDrop, browsers and Mail add `com.apple.quarantine` to the zip, and Archive Utility passes it to the unzipped app. On first open, macOS says it "could not verify" the app. On macOS 15 and 26, Control-click → Open no longer bypasses this; the friend uses System Settings → Privacy & Security → **Open Anyway** once. `How to open.txt` and the README also give the Terminal alternative, `xattr -dr com.apple.quarantine "/Applications/Perene TTS.app"`. "Damaged and can't be opened" means the signature is broken, which the `check` and `sign` steps prevent.
+- **App Translocation:** a quarantined app opened straight from Downloads runs from a random read-only path. The app never writes into its bundle, so it still works, but the instructions say to drag it to Applications first.
 - **What is given up:** no notarization, so friends see the warning once. The ad-hoc signature changes on every rebuild, so macOS may treat a rebuilt app as new. The app uses no camera, microphone, contacts or other protected resources, so there are no permission prompts to repeat.
 
 ### Icon
@@ -257,6 +253,17 @@ The colours are proposed in Open Questions. `make desktop-icon` renders `AppIcon
 - **Dependency inversion:** Razor components depend on `IHostShell`, `ISourceFile` and `StudioSession`, never on Photino. Worker settings are plain environment variables read at the existing seams (`create_app`, `ChatterboxEngine`, `ffmpeg()`, `select_device`).
 - **Open/closed:** the Docker path uses the same `StudioApp` composition with its previous values. The worker's new behaviour turns on only through environment variables Docker and `mac-worker` never set.
 - **Testable:** the pure functions (`DesktopLaunch`, `WorkerReadyLine`, `DesktopPaths.Resolve`, `DesktopRules`, `verify_bundled_model`, the token middleware) and the I/O services that take fakes (`AudioExport` with a fake handler and a fake shell, `LocalSourceFiles` with temp directories) are unit-tested on any machine. Photino, signing and the bundle are verified on the Mac.
+
+### Implementation notes (2026-10-12)
+Phases 2–4 were implemented on Linux (Steam Deck), where `make test` passes. The Phase 1 Mac spikes have not run yet. The findings below come from reading the Photino.NET 4.0.16 and Photino.Native 4.0.22 sources. They change the plan as follows, and the Mac run must confirm them:
+
+- **Closing cannot be cancelled through Photino on macOS.** `Photino.Mac.WindowDelegate.mm` calls the closing handler from `windowWillClose:` and ignores its return value. The Quit menu item calls `terminate:` directly. `MacAppKit.InstallCloseHooks` therefore adds `windowShouldClose:` to Photino's `WindowDelegate` class and `applicationShouldTerminate:` to its `AppDelegate` class (`class_addMethod`) before `WaitForClose` creates them. ⌘Q and Dock → Quit go through the same `CloseCoordinator` as the red button. A quit Apple event that carries a reason (`why?`: log out, restart, shut down) is allowed without a dialog. When the app is allowed to quit, the host stops Kestrel and the worker inside `applicationShouldTerminate:`, because AppKit exits the process right afterwards, and `WaitForClose` never returns on macOS. If the hooks cannot be installed, closing quits at once (the Open Questions fallback), and Photino's handler still shuts down cleanly.
+- **The save dialog cannot suggest a name through Photino.** Photino's `ShowSaveFile` sets only the directory. `MacAppKit.ShowSavePanel` opens `NSSavePanel` with `nameFieldStringValue` on the main thread instead. The open-file and folder dialogs use Photino.
+- **Alerts before a window exist use `osascript`.** Photino's `ShowMessage` needs a native window instance. `NativeAlert` passes the text as `argv`, never as script.
+- **Docker-only build (user decision, 2026-10-12):** nothing native is installed on the Mac. PyInstaller and `hdiutil` were dropped: the worker is a standalone Python with macOS wheels in `Contents/Resources/python`, FFmpeg is cross-compiled with zig, signing uses rcodesign, and the app ships as a zip. Verified in the builder on Linux: FFmpeg cross-compiles (2.5 MB, arm64, `minos 14.0`, links only `libSystem`, LGPL with libmp3lame and pthreads); `rcodesign` produces an `ADHOC` signature; the standalone Python, the macOS wheels (1.4 GB, torch with `_C.cpython-311-darwin.so`) and the osx-arm64 .NET publish (115 MB; `WebApp` and `libcoreclr` at `minos 12.0`; `Photino.Native.dylib` universal at `minos 14.0`, linking only system frameworks) all build. FFmpeg needs a wrapper (`macos-cc`) because zig's linker rejects the `-Wl,-dynamic` flag that FFmpeg's darwin configure adds. Not yet run end to end: the model download, assembly, the full `check`, `sign` on the bundle, and the zip.
+- **Device:** `DesktopHost` ships `TTS_DEVICE=auto`, pending the Phase 1b CPU/MPS measurement. A `TTS_DEVICE` set in the host's environment overrides it.
+- **Model license:** the model card at revision `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18` declares `license: mit`. This is recorded in `THIRD-PARTY-NOTICES.md` and still needs the user's confirmation before the DMG is shared.
+- **FFmpeg filters:** besides `aresample`, `aformat` and `anull`, the FFmpeg CLI needs the `abuffer` and `abuffersink` filters to build its audio graph, so the build enables them too.
 
 ## Component Breakdown
 
@@ -287,21 +294,16 @@ The colours are proposed in Open Questions. `make desktop-icon` renders `AppIcon
 - `WebApp.Tests/DesktopLaunchTests.cs`, `DesktopRulesTests.cs`, `DesktopPathsTests.cs`, `WorkerReadyLineTests.cs`, `AudioExportTests.cs`, `LocalSourceFilesTests.cs`, `DesktopAccessMiddlewareTests.cs`.
 - `services/ChatterboxTtsService/app/desktop.py`.
 - `services/ChatterboxTtsService/tests/test_desktop.py`: token middleware, stdin EOF shutdown, ready line, `verify_bundled_model`, `TTS_FFMPEG`.
-- `packaging/macos/build.sh`, `worker.spec`, `requirements-build.txt`, `Info.plist.in`, `VERSION`, `How to open.txt`, `smoke.py`, `smoke.sb` (sandbox profile), `perene-tts.svg`, `AppIcon-1024.png`, `THIRD-PARTY-NOTICES.md`.
+- `packaging/macos/Dockerfile` (builder), `build.sh`, `macos-cc` (zig compiler wrapper), `Info.plist.in`, `VERSION`, `How to open.txt`, `smoke.py`, `smoke.sb` (sandbox profile), `perene-tts.svg`, `AppIcon-1024.png`, `THIRD-PARTY-NOTICES.md`.
 - `packaging/macos/spike/` (Phase 1 only; deleted before Phase 4 is merged).
 
 ## Dependencies
-- **Build host: this Mac.** Apple silicon, macOS 14 or later (this one runs 26.6.2). It needs:
-  - the .NET 10 SDK for macOS Arm64 (not yet installed): the installer from dotnet.microsoft.com or `brew install --cask dotnet-sdk`
-  - Python 3.11 from the python.org macOS installer (not Homebrew; see Packaging)
-  - the Xcode Command Line Tools (installed: `codesign`, `lipo`, `vtool`, `otool`, `sips`, `iconutil`, `hdiutil`, `plutil`).
-
-  Internet is needed **at build time only**: about 3 GB of model weights, PyPI wheels, NuGet, and the FFmpeg/LAME source tarballs. Expect about 25 GB of free disk for the cache, venv and outputs. Homebrew's FFmpeg, used by `make mac-setup`, stays a development tool and is never bundled.
-- **Any machine:** Docker for `make test` and `make desktop-icon`, as today.
+- **Build host: any machine with Docker** (the Mac's Docker Desktop, or Linux such as the Steam Deck). No .NET SDK, Python, Homebrew or Xcode tools are installed on the Mac. Internet is needed **at build time only**: about 3 GB of model weights, about 0.3 GB of macOS wheels, NuGet, the standalone Python, zig, rcodesign and the FFmpeg/LAME sources. Expect about 15 GB of free disk for the cache and outputs.
+- **Any machine:** Docker for `make test`, `make desktop-mac` and `make desktop-icon`.
 - **Runtime (the user's and friends' Macs):** Apple silicon, macOS 14 or later, and nothing installed. WKWebView ships with macOS.
 - **New packages:**
   - `Photino.NET` 4.0.16 (Apache-2.0; targets net8.0/net9.0 and is consumed by net10.0) with `Photino.Native` ≥ 4.0.22.
-  - PyInstaller, pinned to the newest 6.x release at implementation time in `packaging/macos/requirements-build.txt` (build only, never in the Docker worker image).
+  - Builder only (never in the app or the worker image): zig 0.14.1 (MIT), rcodesign 0.29.0 (MPL-2.0), python-build-standalone 20261009 (whose CPython is bundled), Pillow 11.3.0.
 - **Environment variables (worker, desktop only):** `TTS_API_TOKEN`, `TTS_MODEL_DIR`, `TTS_FFMPEG`. None is set in `docker-compose.yml` or `scripts/mac-worker.sh`.
 
 ## External / Vendor Documentation Evidence
@@ -331,7 +333,7 @@ The colours are proposed in Open Questions. `make desktop-icon` renders `AppIcon
 sequenceDiagram
     participant U as User
     participant H as WebApp (desktop mode)
-    participant W as perene-worker (app/desktop.py)
+    participant W as bundled Python (app.desktop)
     participant K as Kestrel 127.0.0.1:0 (StudioApp)
     participant P as PhotinoWindow (WKWebView)
     U->>H: double-click Perene TTS.app
@@ -365,14 +367,14 @@ sequenceDiagram
 | Risk | Evidence | Mitigation |
 | --- | --- | --- |
 | ⌘Q or Dock → Quit bypasses the closing handler, so a running batch is not confirmed | macOS treats app termination separately from window close; Photino's handler is documented for the window | Phase 1a records the behaviour. Fallback: stdin-EOF shutdown and `recover()` re-queue the batch on next launch. Needs user approval (Open Questions). |
-| `codesign` fails on the PyInstaller/torch bundle, or friends see "damaged" | Thousands of `.so`/`.dylib` files; non-code files under `Contents/MacOS` | Inside-out signing, then the bundle without `--deep`. `codesign --verify --deep --strict` in the build. Phase 1b fallback moves the worker to `Contents/Resources`. |
-| Worker or FFmpeg blocked on a friend's Mac even after Open Anyway | Quarantine is inherited by every file copied out of the DMG | Phase 1b quarantine test (ideally on a friend's Mac). Fallback: the README requires `xattr -dr com.apple.quarantine`, with user approval. |
-| A bundled binary needs a newer macOS than a friend has | Homebrew Python/FFmpeg target the build Mac's OS | python.org Python, deployment target 14.0, and the `check` step fails the build on any Mach-O with a newer minimum or an external library path. |
+| A signature made by rcodesign on Linux is rejected by macOS, or friends see "damaged" | Signing happens off-Mac; thousands of `.so`/`.dylib` files | rcodesign nested ad-hoc signing; Python in `Contents/Resources`; `codesign --verify --deep --strict` on the Mac in `make desktop-smoke`. Fallback: run `codesign --force --deep --sign -` once on the Mac (built into macOS, nothing to install). |
+| Worker or FFmpeg blocked on a friend's Mac even after Open Anyway | Quarantine is inherited by every file unzipped from the zip | Phase 1b quarantine test (ideally on a friend's Mac). Fallback: the README requires `xattr -dr com.apple.quarantine`, with user approval. |
+| A bundled binary needs a newer macOS than a friend has | Third-party binaries choose their own minimum | Standalone Python (11.0), PyPI wheels (11.0), FFmpeg target 14.0, and the `check` step fails the build on any Mach-O with a newer minimum or an external library path. |
 | WKWebView refuses loopback HTTP or the launch cookie | App Transport Security; WebKit cookie rules for IP hosts | `NSAllowsLocalNetworking` in `Info.plist`. Phase 1a proves load, cookie and circuit. |
 | MPS fails or is slower for some operations | Not all PyTorch ops run on MPS; AGENTS.md warns against assuming MPS is faster | `PYTORCH_ENABLE_MPS_FALLBACK=1`; Phase 1b measures CPU vs MPS; ship `cpu` if MPS fails or is slower. |
-| PyInstaller misses dynamic imports or data (perth watermark weights, librosa lazy loaders, transformers) | Chatterbox uses package data and lazy imports | `collect_all` list in `worker.spec`. The network-denied smoke test exercises voice and speech, and manual tests cover batch. Phase 1b iterates until it passes. |
+| A wheel needed on macOS differs from the Linux lock | `requirements.lock.txt` was resolved on Linux | The same pins are used; pip fails the build if any pin has no macOS arm64 wheel. The full Python environment is shipped (no import analysis), so lazy imports and package data are always present. The smoke test exercises voice and speech. |
 | A hidden network call at runtime | `snapshot_download` today; HF libraries may probe | `TTS_MODEL_DIR` path skips the download. `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. The smoke test runs under a deny-network sandbox profile, and manual verification uses Wi-Fi off. |
-| Large app and DMG to share | 3.0 GB weights, about 1 GB torch, more for libraries | Sizes recorded (FR25). DMG compressed with `ULFO`. The size budget is an Open Question. |
+| Large app and zip to share | 3.0 GB weights, about 1.4 GB of Python packages | Sizes recorded (FR25). The size budget is an Open Question. |
 | Minimal FFmpeg build is missing a component that a real file needs | `studio.py` decodes arbitrary user MP3/WAV | Configure list covers every MP3/WAV path in use. The pytest suite (real FFmpeg) runs against the bundled binary in the build. Manual test with real MP3 and WAV references. |
 | Other local users or processes reach the loopback servers | Loopback ports are per machine, not per user | Worker token, web launch cookie, `AllowedHosts=127.0.0.1`, random ports, `0700` data directories. |
 | Library injection without the hardened runtime | Ad-hoc, non-hardened apps honour `DYLD_*` variables | Accepted for a personal, hand-shared build and documented in the README. Revisit if the app is ever distributed widely. |

@@ -7,4 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Desktop mode only (native window on macOS); its native library is never loaded in web mode. -->
+    <PackageReference Include="Photino.NET" Version="4.0.16" />
+  </ItemGroup>
 </Project>

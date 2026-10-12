@@ -62,7 +62,7 @@ else
                     </div>
                     <AudioPlayer Src="@BatchRules.AudioUrl(creation)" Preload="none" />
                     <div class="job-actions">
-                        <a class="button secondary icon-button" href="@BatchRules.AudioUrl(creation, download: true)" download title="Download MP3" aria-label="Download MP3 of @creation.VoiceName"><i class="bi bi-download" aria-hidden="true"></i></a>
+                        <DownloadButton CssClass="button secondary icon-button" Href="@BatchRules.AudioUrl(creation, download: true)" SuggestedName="@(batchTrack ? BatchRules.OutputName(creation.BatchName ?? "Batch", creation.TrackNumber!.Value) : $"perene-{creation.JobId}.mp3")" Title="Download MP3" AriaLabel="@($"Download MP3 of {creation.VoiceName}")" />
                         <button class="button secondary icon-button" title="@(open ? "Hide details" : "Show details")" aria-label="@(open ? "Hide" : "Show") details for @creation.VoiceName" aria-expanded="@(open ? "true" : "false")" aria-controls="@detailsId" @onclick="() => Toggle(creation.JobId)"><i class="bi @(open ? "bi-chevron-up" : "bi-chevron-down")" aria-hidden="true"></i></button>
                     </div>
                 </div>

@@ -1,8 +1,14 @@
 using PereneTts.Models;
 namespace PereneTts.Services;
 
+/// <summary>Desktop mode only: whether the sidecar worker process has exited. Web mode does not register it.</summary>
+public interface IWorkerStatus
+{
+    bool HasExited { get; }
+}
+
 // One studio session per Blazor circuit keeps generation visible while navigating.
-public sealed class StudioSession(TtsClient client) : IAsyncDisposable
+public sealed class StudioSession(TtsClient client, IWorkerStatus? worker = null) : IAsyncDisposable
 {
     private readonly CancellationTokenSource lifetime = new();
     private Task? polling;
@@ -18,9 +24,13 @@ public sealed class StudioSession(TtsClient client) : IAsyncDisposable
     public Job? Job { get; private set; }
     public bool Busy { get; private set; }
     public string? Error { get; private set; }
+    /// <summary>Short success message (for example a saved file), cleared after a few seconds.</summary>
+    public string? Notice { get; private set; }
     public string SelectedVoice { get; set; } = "";
     public string SpeechText { get; set; } = "";
     private const string Unavailable = "The voice engine is unavailable. Check that the TTS worker is running.";
+    private const string WorkerStopped = "The voice engine stopped unexpectedly. Close and reopen Perene TTS.";
+    private static readonly TimeSpan NoticeDuration = TimeSpan.FromSeconds(6);
     public string HealthText => Health is null ? "Connecting to voice engine…" : Health.LoadError ??
         (Health.ModelReady ? $"Voice engine ready · {Health.Device.ToUpperInvariant()}" : "Loading voice engine…");
     public static string LanguageName(string? language) => language switch
@@ -33,6 +43,18 @@ public sealed class StudioSession(TtsClient client) : IAsyncDisposable
     };
     public void Start() => polling ??= Poll();
     public void SetError(string? error) { Error = error; Changed?.Invoke(); }
+    public void SetNotice(string? notice)
+    {
+        Notice = notice;
+        Changed?.Invoke();
+        if (notice is not null) _ = ClearNoticeLater(notice);
+    }
+    private async Task ClearNoticeLater(string notice)
+    {
+        try { await Task.Delay(NoticeDuration, lifetime.Token); }
+        catch (OperationCanceledException) { return; }
+        if (Notice == notice) SetNotice(null);
+    }
     public async Task Refresh()
     {
         try
@@ -42,11 +64,11 @@ public sealed class StudioSession(TtsClient client) : IAsyncDisposable
             Creations = await client.CreationsAsync(lifetime.Token);
             Batches = await client.BatchesAsync(lifetime.Token);
             BatchesLoaded = true;
-            if (Error == Unavailable) Error = null;
+            if (Error is Unavailable or WorkerStopped) Error = null;
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        { Health = null; Error = Unavailable; }
+        { Health = null; Error = worker?.HasExited == true ? WorkerStopped : Unavailable; }
         Changed?.Invoke();
     }
     private async Task Poll()

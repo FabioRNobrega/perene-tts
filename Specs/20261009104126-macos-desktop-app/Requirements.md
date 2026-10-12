@@ -23,19 +23,19 @@ The user wants a Mac app they can double-click on their MacBook Air, and share w
 The target Mac was checked on 2026-10-12 (from the [Photino.NET on this Mac guide](https://claude.ai/code/artifact/b25d4ee0-3d2d-4a4f-8f5f-9451c0f7a7eb)):
 - **Hardware:** MacBook Air (Mac16,12), Apple M4 with 10 cores (4 performance, 6 efficiency), native arm64 (`sysctl.proc_translated` = 0), 24 GB memory.
 - **OS:** macOS 26.6.2 (build 25G83). Gatekeeper is enabled. Rosetta 2 is installed but not needed.
-- **Tools:** the Xcode Command Line Tools are installed (`codesign`, `iconutil`, `sips`, `hdiutil`). The .NET SDK is **not** installed.
+- **Tools:** Docker Desktop is installed. The .NET SDK is **not** installed, and none is needed: the build runs in Docker, and macOS's built-in `codesign` and `sandbox-exec` cover the checks on the Mac.
 - **Web view:** Photino uses the system WKWebView, which ships with macOS. Nothing needs to be bundled for the UI to render or play MP3.
 
 ## Decisions Already Made
 These were agreed with the user before writing this spec. They are not open for re-discussion here.
 
-- **Target:** macOS on Apple silicon only (`osx-arm64`), packaged as `Perene TTS.app` inside a DMG. There is no Intel or universal build. The Linux AppImage and Windows come later.
-- **Audience:** the user's own Mac, plus a few friends with Apple-silicon Macs. The DMG is shared by hand (AirDrop, a USB drive or a cloud-drive link). There is no public hosting, no CI and no store.
-- **No paid Apple account:** the app is **ad-hoc signed** (`codesign --sign -`). It is not notarized and does not use the hardened runtime. On the user's Mac, a locally built app is not quarantined and opens directly. Friends approve the first launch once, through System Settings → Privacy & Security → **Open Anyway**.
+- **Target:** macOS on Apple silicon only (`osx-arm64`), packaged as `Perene TTS.app` inside a zip. There is no Intel or universal build. The Linux AppImage and Windows come later.
+- **Audience:** the user's own Mac, plus a few friends with Apple-silicon Macs. The zip is shared by hand (AirDrop, a USB drive or a cloud-drive link). There is no public hosting, no CI and no store.
+- **No paid Apple account:** the app is **ad-hoc signed** (with `rcodesign` in the builder, equivalent to `codesign --sign -`). It is not notarized and does not use the hardened runtime. On the user's Mac, a locally built app is not quarantined and opens directly. Friends approve the first launch once, through System Settings → Privacy & Security → **Open Anyway**.
 - **Ship everything:** model weights, FFmpeg, the Python runtime and libraries, and the .NET runtime are all bundled. The web view is the system WKWebView. Nothing is downloaded at install or first run.
 - **Worker:** the existing FastAPI/Uvicorn worker becomes one persistent sidecar process bound to `127.0.0.1` on a random port and protected by a per-launch token. Loopback HTTP needs no internet. There is no stdin/stdout RPC.
 - **UI host:** the existing ASP.NET Core Blazor Interactive Server host runs in the desktop process on a random loopback port. A Photino window shows it. UI changes for native dialogs are acceptable.
-- **Build on the Mac:** `make desktop-mac` runs natively on the Mac, because Linux containers cannot produce macOS binaries and PyInstaller cannot cross-compile. Product code and tests are still developed and tested with `make test` (Docker) on any machine.
+- **Build in Docker, install nothing on the Mac** (changed 2026-10-12, replacing "build on the Mac"): `make desktop-mac` runs inside a builder container on any machine. The container holds every build tool (the .NET SDK, Python, zig, rcodesign, llvm). It downloads the macOS arm64 parts that already exist (a standalone Python, PyPI wheels, the .NET runtime pack), cross-compiles FFmpeg, signs, and writes the app and zip to `dist/` outside the container. PyInstaller is not used, because it cannot cross-compile. The Mac needs only Docker for building and nothing at all for running. Product code and tests are still developed and tested with `make test`.
 - **Existing workflows stay supported:** `make docker-run-bg`, `make test` and the `mac-*` targets keep working unchanged.
 - **Updates are manual:** the user or friend replaces the app in `/Applications`, and user data is kept.
 - **First launch starts empty:** data from the Docker volumes or from `make mac-worker`'s `services/ChatterboxTtsService/data` is not imported.
@@ -45,7 +45,7 @@ These were agreed with the user before writing this spec. They are not open for 
 
 ## User Stories
 - Given the user's Mac with Wi-Fi off, when the user double-clicks **Perene TTS** in `/Applications`, then a "Perene TTS" window opens with the existing studio UI. The engine status moves from "Loading voice engine…" to "Voice engine ready · MPS" (or "· CPU", per the device decision) without any download.
-- Given a friend's Apple-silicon Mac on macOS 14 or later, when the friend opens the shared DMG, drags **Perene TTS** to Applications and double-clicks it, then macOS blocks the first launch. After the friend selects **Open Anyway** in System Settings → Privacy & Security once, the app opens and works offline, and later launches open directly.
+- Given a friend's Apple-silicon Mac on macOS 14 or later, when the friend unzips the shared zip, drags **Perene TTS** to Applications and double-clicks it, then macOS blocks the first launch. After the friend selects **Open Anyway** in System Settings → Privacy & Security once, the app opens and works offline, and later launches open directly.
 - Given the app is open, when the user creates a voice, generates speech and runs a batch, then everything works as in the Docker version and data is saved under `~/Library/Application Support/Perene TTS/`.
 - Given a completed creation or batch, when the user selects a download control, then a native "Save" sheet opens with a sensible file name, and the MP3 or ZIP is written where they choose.
 - Given a batch is converting, when the user closes the window, then a confirmation explains that the conversion must be stopped. The window closes only after the user selects "Stop conversion and quit"; "Keep working" leaves everything running.
@@ -113,22 +113,22 @@ These were agreed with the user before writing this spec. They are not open for 
 
 **Packaging (`packaging/macos/`, `Makefile`)**
 
-17. FR17 — `make desktop-mac` runs only on an Apple-silicon Mac (elsewhere it exits with a clear message). It first checks for the .NET 10 SDK (arm64), python.org Python 3.11 and the Xcode Command Line Tools, and names any that are missing. It then builds `dist/Perene TTS.app` and `dist/Perene-TTS-macos-arm64.dmg`. The app contains:
+17. FR17 — `make desktop-mac` builds the builder image (`packaging/macos/Dockerfile`) and runs `packaging/macos/build.sh` in it, on any Docker host (Apple silicon or x86-64). It produces `dist/Perene TTS.app` and `dist/Perene-TTS-macos-arm64.zip`. Every download is pinned and checksum-verified, and cached in `build/macos/`. The app contains:
     - a self-contained `osx-arm64` .NET publish of `WebApp`
-    - a PyInstaller `onedir` worker
+    - a standalone CPython 3.11 for macOS arm64 (python-build-standalone) with the worker (`app/`) and its pinned macOS arm64 wheels in `site-packages`, run as `python3.11 -I -m app.desktop`
     - the pinned `multilingual-v3` weights plus `model-manifest.json`
-    - a minimal LGPL FFmpeg built for arm64
+    - a minimal LGPL FFmpeg cross-compiled for arm64 with zig
     - `Info.plist`, `AppIcon.icns`, and third-party license notices.
 
-    The build prints the size of each component, the app and the DMG.
+    The build prints the size of each component, the app and the zip.
 18. FR18 — **Compatibility floor:** every Mach-O file in the app is arm64 and declares a minimum macOS of 14.0 or lower, matching `LSMinimumSystemVersion` 14.0 (the oldest macOS that .NET 10 supports). The build fails if any file declares a newer minimum, is x86_64-only, or links a library outside the bundle or the system (for example `/opt/homebrew` or `/usr/local`).
-19. FR19 — **Signing without a paid account:** every Mach-O file is ad-hoc signed, inside-out, and then the bundle is signed (`codesign --sign -`), without the hardened runtime or entitlements. `codesign --verify --deep --strict` passes. Nothing writes into the bundle at runtime.
+19. FR19 — **Signing without a paid account:** `rcodesign sign` ad-hoc signs every nested Mach-O file and then the bundle, without the hardened runtime or entitlements. On the Mac, Apple's built-in `codesign --verify --deep --strict` passes; `make desktop-smoke` runs it. Nothing writes into the bundle at runtime: Python bytecode goes to `~/Library/Caches/Perene TTS/pycache` through `-X pycache_prefix`.
 20. FR20 — `Info.plist` sets: `CFBundleName` and `CFBundleDisplayName` "Perene TTS", `CFBundleIdentifier` `local.perene.tts`, `CFBundleExecutable` `WebApp`, `CFBundleIconFile` `AppIcon`, `CFBundlePackageType` `APPL`, `CFBundleShortVersionString`/`CFBundleVersion` from `packaging/macos/VERSION`, `LSMinimumSystemVersion` 14.0, `LSApplicationCategoryType` `public.app-category.music`, `NSHighResolutionCapable` true, and `NSAppTransportSecurity` → `NSAllowsLocalNetworking` true (loopback HTTP in WKWebView).
-21. FR21 — The icon source is `packaging/macos/perene-tts.svg`: the Bootstrap Icons 1.13.1 `soundwave` path in Ochre Gold on a Perene green rounded square, sized to the macOS app-icon grid with transparent margins. `make desktop-icon` renders `packaging/macos/AppIcon-1024.png` from it in Docker, and that PNG is committed. `make desktop-mac` builds `AppIcon.icns` from the PNG with `sips` and `iconutil`. Finder, the Dock and ⌘-Tab show the icon.
-22. FR22 — The DMG contains the app, an `Applications` shortcut and a short `How to open.txt` with the Open Anyway steps. A quarantined copy (as a friend receives it) opens after Open Anyway, and the worker and FFmpeg subprocesses start normally.
-23. FR23 — `make desktop-smoke` (on the Mac) runs the worker from the built app with outbound network denied except loopback. It waits for `model_ready`, creates a voice from a generated 5-second WAV, synthesizes a short text, and checks that a non-empty MP3 is returned. It prints the device and timings, and fails on any error.
+21. FR21 — The icon source is `packaging/macos/perene-tts.svg`: the Bootstrap Icons 1.13.1 `soundwave` path in Ochre Gold on a Perene green rounded square, sized to the macOS app-icon grid with transparent margins. `make desktop-icon` renders `packaging/macos/AppIcon-1024.png` from it in Docker, and that PNG is committed. `make desktop-mac` builds `AppIcon.icns` from the PNG with Pillow in the builder. Finder, the Dock and ⌘-Tab show the icon.
+22. FR22 — The zip contains the app and a short `How to open.txt` with the unzip, Applications and Open Anyway steps. A quarantined copy (as a friend receives it) opens after Open Anyway, and the worker and FFmpeg subprocesses start normally.
+23. FR23 — `make desktop-smoke` (on the Mac, with nothing installed) first runs `codesign --verify --deep --strict` on the app, then uses the app's own bundled Python to run the worker from the built app with outbound network denied except loopback. It waits for `model_ready`, creates a voice from a generated 5-second WAV, synthesizes a short text, and checks that a non-empty MP3 is returned. It prints the device and timings, and fails on any error.
 24. FR24 — The existing workflows are unchanged: `make docker-build`, `make docker-run-bg`, `make test`, `make docker-check` and the `mac-*` targets behave exactly as before, and all existing pytest and xUnit tests pass.
-25. FR25 — README.md gets a "Desktop app (macOS)" section covering build, install, sharing with friends (Open Anyway and the Terminal alternative), data locations, update, uninstall, logs and limitations. AGENTS.md is refreshed through `init-agent`. The measured app size, DMG size, worker bundle size, time to window, time to `model_ready`, speech speed on CPU and MPS, and peak memory are recorded in this spec's Validation results.
+25. FR25 — README.md gets a "Desktop app (macOS)" section covering build, install, sharing with friends (Open Anyway and the Terminal alternative), data locations, update, uninstall, logs and limitations. AGENTS.md is refreshed through `init-agent`. The measured app size, zip size, worker bundle size, time to window, time to `model_ready`, speech speed on CPU and MPS, and peak memory are recorded in this spec's Validation results.
 
 ## Non-Functional Requirements
 - **Offline:** after the app is built, nothing contacts the network: no model download, no NuGet or pip, no CDN. The UI already bundles its fonts and icons in `wwwroot/vendor/`.
@@ -147,7 +147,7 @@ These were agreed with the user before writing this spec. They are not open for 
   - Pure decisions (desktop launch detection, close rules, ready-line parsing, path resolution) are static and unit-tested.
   - Web mode registers a browser implementation, so no component branches on Photino types.
 - **Testability:** new worker behaviour is covered by pytest with the shared `FakeEngine` and no model download. New .NET rules and services are covered by xUnit in `WebApp.Tests` with fake `HttpMessageHandler`s and temp directories. Everything runs through `make test` on any machine. Only packaging and the window need the Mac.
-- **Licensing:** sharing the DMG with friends is distribution. Bundled third-party components ship their license texts and notices in `Contents/Resources/licenses/`: FFmpeg (with a source pointer), LAME, Python, PyTorch, Chatterbox, the model weights, Photino, .NET, fonts and icons.
+- **Licensing:** sharing the zip with friends is distribution. Bundled third-party components ship their license texts and notices in `Contents/Resources/licenses/`: FFmpeg (with a source pointer), LAME, Python, PyTorch, Chatterbox, the model weights, Photino, .NET, fonts and icons.
 
 ## Out of Scope
 - The Linux AppImage (the earlier target of this spec), Windows, and Intel or universal macOS builds. The worker and host work (FR1–FR16) is reusable for them later.
@@ -162,8 +162,8 @@ These were agreed with the user before writing this spec. They are not open for 
 - Replacing Blazor Interactive Server with BlazorWebView/Photino.Blazor.
 
 ## Open Questions
-- ⚠️ TODO: **Model redistribution (blocks sharing, not personal use).** Confirm from the model card at the pinned revision `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18` that the weights' license allows redistribution inside the app, and record it in the notices before the DMG goes to friends.
+- ⚠️ TODO: **Model redistribution (blocks sharing, not personal use).** Confirm from the model card at the pinned revision `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18` that the weights' license allows redistribution inside the app, and record it in the notices before the zip goes to friends. The model card at that revision declares `license: mit` (recorded in `THIRD-PARTY-NOTICES.md`); the user still confirms.
 - ⚠️ TODO: **Default device.** Proposal: `TTS_DEVICE=auto` (Metal/MPS with `PYTORCH_ENABLE_MPS_FALLBACK=1`, CPU otherwise), as `make mac-worker` does today. Ship `auto` only if Phase 1b shows the MPS build passes the smoke test and is not slower than CPU on the M4; otherwise ship `cpu`. The measured result needs the user's confirmation.
 - ⚠️ TODO: **⌘Q and Dock → Quit.** If Phase 1a shows Photino does not route app termination through its closing handler, quitting cannot be confirmed. Proposed fallback: ⌘Q shuts down without a dialog (FR14), and interrupted batches are re-queued on the next launch by the existing `BatchService.recover()`. This needs the user's approval before Phase 3.
 - ⚠️ TODO: **Exact icon colours.** The proposal is background `#1B2A22` (the Perene dark-green `--bg-elevated` token) and bars Ochre Gold 300 `#D8AC5C`. Alternatives: Signal Green 900 `#10291B` for the background, or the brighter Ochre Gold 200 `#E7C787` for the bars.
-- ⚠️ TODO: **Size budget.** No limit is set yet. Expect an app of about 5–6 GB and a smaller compressed DMG. If the DMG is too large to share comfortably (for example over a cloud-drive link), decide whether to trim the worker further.
+- ⚠️ TODO: **Size budget.** No limit is set yet. Expect an app of about 5 GB and a somewhat smaller zip. If the zip is too large to share comfortably (for example over a cloud-drive link), decide whether to trim the worker further.

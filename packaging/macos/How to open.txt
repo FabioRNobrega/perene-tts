@@ -1,0 +1,16 @@
+Perene TTS for Apple-silicon Macs (M1 or later, macOS 14 Sonoma or later)
+
+1. Double-click the zip if it is not unpacked yet, then drag "Perene TTS" into
+   your Applications folder.
+2. Open Applications and double-click "Perene TTS".
+3. The first time, macOS says it cannot verify the app, because it is not
+   notarized by Apple. Click "Done" (not "Move to Trash").
+4. Open System Settings > Privacy & Security, scroll down, and click
+   "Open Anyway" next to the Perene TTS message. Confirm with your password.
+5. Perene TTS opens. Later launches open directly.
+
+Terminal alternative (instead of steps 3-4):
+    xattr -dr com.apple.quarantine "/Applications/Perene TTS.app"
+
+Everything runs on this Mac, offline. Your voices, creations and batches are
+kept in ~/Library/Application Support/Perene TTS and survive app updates.

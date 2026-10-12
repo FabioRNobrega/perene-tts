@@ -434,6 +434,26 @@ textarea {
 .alert .quiet {
     color:inherit
 }
+.notice {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+    padding:14px 18px;
+    margin-bottom:20px;
+    border:1px solid var(--border);
+    border-left:3px solid var(--brand-green);
+    border-radius:6px;
+    background:var(--bg-elevated);
+    color:var(--text-body);
+    font-size:.85rem
+}
+.notice .bi {
+    color:var(--brand-green)
+}
+.notice .quiet {
+    color:inherit
+}
 .output {
     margin-top:24px
 }
@@ -1091,6 +1111,11 @@ code {
     outline-offset:3px
 }
 .picker-input:disabled+.picker-button {
+    opacity:.45;
+    cursor:not-allowed
+}
+/* Desktop pickers are real buttons, so the same disabled look covers "Choosing…". */
+.upload button.picker-button:disabled {
     opacity:.45;
     cursor:not-allowed
 }
