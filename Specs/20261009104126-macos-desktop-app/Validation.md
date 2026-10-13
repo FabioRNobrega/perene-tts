@@ -59,7 +59,7 @@
 **Unit tests (xUnit, `WebApp.Tests/`, run by the `web-test` stage):**
 - `DesktopLaunchTests`:
   - `--desktop` → true
-  - `/Applications/Perene TTS.app/Contents/MacOS/` (with and without a trailing slash, and with spaces) → true
+  - `/Applications/Perene TTS.app/Contents/Resources/dotnet/` (with and without a trailing slash, and with spaces) → true; `…/Contents/MacOS/` → false
   - `/workspace/WebApp/bin/Debug/net10.0/` and `/app/` (Docker) with no arguments → false.
 - `DesktopRulesTests` (Theories):
   - Batches in `queued`/`running`/`pausing` → `ConfirmStopBatches` with exactly those batches.

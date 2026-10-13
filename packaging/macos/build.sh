@@ -3,6 +3,8 @@
 # Runs inside the builder image (packaging/macos/Dockerfile) through `make desktop-mac`; nothing is installed on the Mac.
 # Everything is downloaded ready-made for macOS arm64 (standalone Python, PyPI wheels, .NET runtime pack) or
 # cross-compiled (FFmpeg with zig), then ad-hoc signed with rcodesign. Downloads are cached in build/macos/.
+# The app is assembled, signed and zipped in $STAGE on the container's own Linux disk (a Docker volume), then copied to
+# dist/: rcodesign fails with "No such file or directory" on bundles inside a folder shared from macOS.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -10,8 +12,9 @@ HERE="$ROOT/packaging/macos"
 SERVICE="$ROOT/services/ChatterboxTtsService"
 BUILD="$ROOT/build/macos"
 DIST="$ROOT/dist"
-APP="$DIST/Perene TTS.app"
-ZIP="$DIST/Perene-TTS-macos-arm64.zip"
+STAGE="${MACOS_STAGE:-/stage}"
+APP="$STAGE/Perene TTS.app"
+ZIP="$STAGE/Perene-TTS-macos-arm64.zip"
 VERSION="$(tr -d '[:space:]' < "$HERE/VERSION")"
 LLVM_BIN="$(llvm-config --bindir 2>/dev/null || true)"
 
@@ -22,6 +25,13 @@ FFMPEG_VERSION=7.1.1
 FFMPEG_SHA256=733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1
 LAME_VERSION=3.100
 LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+# resemble-perth imports pkg_resources, which venvs and the worker image get from setuptools. The standalone Python
+# carries setuptools only as its ensurepip wheel, so that same wheel is installed with the worker packages.
+SETUPTOOLS_WHEEL=setuptools-79.0.1-py3-none-any.whl
+# Chatterbox's tokenizer starts spacy_pkuseg for every language, and it downloads this model unless PKUSEG_HOME already
+# holds the zip and its unpacked folder. URL and SHA-256 are spacy_pkuseg 1.0.1's own (spacy_pkuseg/config.py).
+PKUSEG_URL=https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip
+PKUSEG_SHA256=b216e7f92de7ae285aeab8feba2faa8ea8216e5995ff6fb3d391cc8356db1bfe
 # pip resolves wheels for the Mac, not for this Linux container.
 MAC_WHEELS=(--platform macosx_14_0_arm64 --python-version 3.11 --implementation cp --abi cp311 --only-binary=:all:)
 export HF_HOME="$BUILD/hf-cache" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
@@ -34,13 +44,18 @@ download() {  # url sha256 destination
     echo "$2  $3" | sha256sum -c - >/dev/null || fail "Checksum mismatch for $3; delete it and rebuild."
 }
 
+quiet() {  # command...; keeps configure/make output (thousands of harmless upstream warnings) in a log shown on failure
+    local log="$BUILD/ffmpeg-build.log"
+    "$@" >>"$log" 2>&1 || { tail -n 40 "$log" >&2; fail "$1 failed in ${PWD#"$ROOT/"}; full output in ${log#"$ROOT/"}."; }
+}
+
 preflight() {
     step "Checking the builder"
     local tool
     for tool in dotnet zig rcodesign macos-cc python3 zip "$LLVM_BIN/llvm-objdump"; do
         command -v "$tool" >/dev/null || fail "$tool is missing. Run this through make desktop-mac (it uses the builder image)."
     done
-    mkdir -p "$BUILD/downloads" "$BUILD/licenses" "$DIST"
+    mkdir -p "$BUILD/downloads" "$BUILD/licenses" "$DIST" "$STAGE"
 }
 
 python_runtime() {
@@ -52,17 +67,19 @@ python_runtime() {
 packages() {
     step "Worker packages (macOS arm64 wheels from PyPI)"
     local site="$BUILD/site-packages" wheels="$BUILD/wheels" stamp
-    stamp="$(cat "$SERVICE/requirements.lock.txt" "$SERVICE/requirements.txt" | sha256sum | cut -d' ' -f1)"
+    stamp="$({ cat "$SERVICE/requirements.lock.txt" "$SERVICE/requirements.txt"; echo "$SETUPTOOLS_WHEEL"; } | sha256sum | cut -d' ' -f1)"
     if [[ -f "$site/.stamp" && "$(cat "$site/.stamp")" == "$stamp" ]]; then return; fi
     rm -rf "${site:?}" "${wheels:?}"
     mkdir -p "$wheels"
+    tar -xzf "$BUILD/downloads/$PYTHON_ARCHIVE" -C "$wheels" --strip-components=5 \
+        "python/lib/python3.11/ensurepip/_bundled/$SETUPTOOLS_WHEEL"
     # Two requirements ship only as source; both are pure Python, so the wheels built here run on any platform.
     pip wheel --quiet --no-deps --wheel-dir "$wheels" \
         "$(grep -E '^antlr4-python3-runtime==' "$SERVICE/requirements.lock.txt")" \
         "$(grep -E '^chatterbox-tts @' "$SERVICE/requirements.txt")"
     { grep -vE '^\s*(#|$)' "$SERVICE/requirements.lock.txt"
       grep -vE '^\s*(#|$)|^chatterbox-tts @' "$SERVICE/requirements.txt"
-      ls "$wheels"/chatterbox_tts-*.whl; } > "$BUILD/requirements-macos.txt"
+      ls "$wheels"/chatterbox_tts-*.whl "$wheels/$SETUPTOOLS_WHEEL"; } > "$BUILD/requirements-macos.txt"
     # Same pinned set as scripts/mac-worker.sh setup; PyPI's macOS arm64 torch wheel includes MPS.
     pip install --quiet --no-deps --target "$site" --find-links "$wheels" "${MAC_WHEELS[@]}" -r "$BUILD/requirements-macos.txt"
     echo "$stamp" > "$site/.stamp"
@@ -118,6 +135,7 @@ for name, expected in manifest["files"].items():
         raise SystemExit(f"Model file {name} does not match model-manifest.json; delete build/macos/model and rebuild.")
 print(f"  verified {len(manifest['files'])} files at revision {manifest['revision']}")
 PY
+    download "$PKUSEG_URL" "$PKUSEG_SHA256" "$BUILD/downloads/spacy_ontonotes.zip"
 }
 
 ffmpeg_build() {
@@ -129,21 +147,23 @@ ffmpeg_build() {
         download "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" "$FFMPEG_SHA256" "$BUILD/downloads/ffmpeg-$FFMPEG_VERSION.tar.xz"
         rm -rf "${prefix:?}" "${sources:?}"
         mkdir -p "$sources"
+        : > "$BUILD/ffmpeg-build.log"
         tar --no-same-owner --no-same-permissions -xzf "$BUILD/downloads/lame-$LAME_VERSION.tar.gz" -C "$sources"
         tar --no-same-owner --no-same-permissions -xJf "$BUILD/downloads/ffmpeg-$FFMPEG_VERSION.tar.xz" -C "$sources"
         (
             cd "$sources/lame-$LAME_VERSION"
             sed -i '/lame_init_old/d' include/libmp3lame.sym  # the export list names a symbol that no longer exists
-            ./configure --prefix="$prefix" --host=aarch64-apple-darwin --build="$(uname -m)-pc-linux-gnu" \
+            quiet ./configure --prefix="$prefix" --host=aarch64-apple-darwin --build="$(uname -m)-pc-linux-gnu" \
                 CC=macos-cc AR=macos-ar RANLIB=macos-ranlib NM="$LLVM_BIN/llvm-nm" CFLAGS="-O2" \
-                --disable-shared --enable-static --disable-frontend --disable-dependency-tracking >/dev/null
-            make -j"$jobs" >/dev/null && make install >/dev/null
+                --disable-shared --enable-static --disable-frontend --disable-dependency-tracking
+            quiet make -j"$jobs"
+            quiet make install
         )
         (
             cd "$sources/ffmpeg-$FFMPEG_VERSION"
             # Only what studio.py uses: MP3/WAV decode to 24 kHz mono PCM, and 192 kbps libmp3lame encode.
             # --disable-autodetect keeps AudioToolbox, VideoToolbox and every external library out.
-            ./configure --prefix="$prefix" --enable-cross-compile --target-os=darwin --arch=aarch64 \
+            quiet ./configure --prefix="$prefix" --enable-cross-compile --target-os=darwin --arch=aarch64 \
                 --cc=macos-cc --ar=macos-ar --ranlib=macos-ranlib --nm="$LLVM_BIN/llvm-nm" --host-cc=gcc \
                 --pkg-config=false --extra-cflags="-I$prefix/include" --extra-ldflags="-L$prefix/lib" \
                 --disable-autodetect --disable-everything --disable-gpl --disable-nonfree --disable-network \
@@ -151,8 +171,9 @@ ffmpeg_build() {
                 --disable-shared --enable-static --enable-pthreads --enable-libmp3lame \
                 --enable-decoder='mp3*,pcm_*' --enable-encoder=libmp3lame,pcm_s16le \
                 --enable-demuxer=mp3,wav --enable-muxer=mp3,wav --enable-parser=mpegaudio \
-                --enable-filter=aresample,aformat,anull,abuffer,abuffersink --enable-protocol=file,pipe >/dev/null
-            make -j"$jobs" >/dev/null && make install >/dev/null
+                --enable-filter=aresample,aformat,anull,abuffer,abuffersink --enable-protocol=file,pipe
+            quiet make -j"$jobs"
+            quiet make install
         )
         mkdir -p "$BUILD/licenses/ffmpeg" "$BUILD/licenses/lame"
         cp "$sources/ffmpeg-$FFMPEG_VERSION/COPYING.LGPLv2.1" "$sources/ffmpeg-$FFMPEG_VERSION/LICENSE.md" "$BUILD/licenses/ffmpeg/"
@@ -201,9 +222,16 @@ PY
 bundle() {
     step "Assembling Perene TTS.app"
     local resources="$APP/Contents/Resources" site
-    rm -rf "$APP"
+    rm -rf "$APP" "$ZIP"
     mkdir -p "$APP/Contents/MacOS" "$resources"
-    cp -a "$BUILD/webapp/." "$APP/Contents/MacOS/"
+    # Contents/MacOS may hold only Mach-O code: other files there fall under the nested-code rule, which rcodesign leaves
+    # out of the bundle seal and Apple's codesign signs only through extended attributes (lost in a zip). So the publish
+    # output lives in Contents/Resources/dotnet, and Contents/MacOS gets the launcher (apphost) plus a WebApp.dll symlink,
+    # sealed as a link. The launcher finds the app through it, and .NET then uses Contents/Resources/dotnet as the app
+    # folder (AppContext.BaseDirectory, where it finds the runtime libraries; DesktopLaunch.BundleContents).
+    cp -a "$BUILD/webapp/." "$resources/dotnet/"
+    mv "$resources/dotnet/WebApp" "$APP/Contents/MacOS/WebApp"
+    ln -s ../Resources/dotnet/WebApp.dll "$APP/Contents/MacOS/WebApp.dll"
     cp "$BUILD/ffmpeg/bin/ffmpeg" "$APP/Contents/MacOS/ffmpeg"
     tar --no-same-owner -xzf "$BUILD/downloads/$PYTHON_ARCHIVE" -C "$resources"   # creates python/
     site="$resources/python/lib/python3.11/site-packages"
@@ -212,6 +240,10 @@ bundle() {
     # The worker itself; runs as `python3.11 -I -m app.desktop`.
     tar -C "$SERVICE" --exclude=__pycache__ -cf - app | tar --no-same-owner -C "$site" -xf -
     cp -a "$BUILD/model" "$resources/model"
+    # The worker gets PKUSEG_HOME=Contents/Resources/pkuseg (WorkerProcess.Settings), so nothing is downloaded at runtime.
+    mkdir -p "$resources/pkuseg"
+    cp "$BUILD/downloads/spacy_ontonotes.zip" "$resources/pkuseg/"
+    python3 -m zipfile -e "$resources/pkuseg/spacy_ontonotes.zip" "$resources/pkuseg/spacy_ontonotes"
     sed "s/@VERSION@/$VERSION/g" "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
     python3 -c 'import sys; from PIL import Image; Image.open(sys.argv[1]).save(sys.argv[2], format="ICNS")' \
         "$HERE/AppIcon-1024.png" "$resources/AppIcon.icns"
@@ -239,22 +271,35 @@ check() {
     while IFS= read -r -d '' file; do
         count=$((count + 1))
         if ! headers="$("$LLVM_BIN/llvm-objdump" --macho --arch=arm64 --private-headers "$file" 2>/dev/null)"; then
-            echo "  not arm64: ${file#"$DIST/"}"; problems=$((problems + 1)); continue
+            echo "  not arm64: ${file#"$STAGE/"}"; problems=$((problems + 1)); continue
         fi
         minos="$(awk '$1=="minos" || ($1=="version" && prev ~ /LC_VERSION_MIN_MACOSX/) {print $2; exit} {if ($1=="cmd") prev=$2}' <<<"$headers")"
         if [[ -n "$minos" && "$(printf '%s\n14.0\n' "$minos" | sort -V | tail -1)" != 14.0 ]]; then
-            echo "  needs macOS $minos: ${file#"$DIST/"}"; problems=$((problems + 1))
+            echo "  needs macOS $minos: ${file#"$STAGE/"}"; problems=$((problems + 1))
         fi
         # A library's own install name is not a dependency; everything else must be in the app or the OS.
         id="$("$LLVM_BIN/llvm-objdump" --macho --arch=arm64 --dylib-id "$file" 2>/dev/null | tail -n +2 | awk '{print $1}')"
         deps="$("$LLVM_BIN/llvm-objdump" --macho --arch=arm64 --dylibs-used "$file" 2>/dev/null | tail -n +2 | awk '{print $1}')"
         outside="$(grep -vxF "${id:-//none//}" <<<"$deps" | grep -vE '^$|^(@rpath|@loader_path|@executable_path)/|^/usr/lib/|^/System/' || true)"
         if [[ -n "$outside" ]]; then
-            echo "  links outside the app: ${file#"$DIST/"} -> $outside"; problems=$((problems + 1))
+            echo "  links outside the app: ${file#"$STAGE/"} -> $outside"; problems=$((problems + 1))
         fi
     done < <(machos)
     ((problems == 0)) || fail "$problems compatibility problem(s) in $count Mach-O files."
     echo "  $count Mach-O files OK"
+    # The Mac's disk ignores case, so paths that differ only in case would overwrite each other there and break the seal.
+    local clashes
+    clashes="$(python3 - "$APP" <<'PY'
+import os, sys
+seen = {}
+for folder, dirs, names in os.walk(sys.argv[1]):
+    for name in dirs + names:
+        path = os.path.relpath(os.path.join(folder, name), sys.argv[1])
+        if seen.setdefault(path.casefold(), path) != path:
+            print(f"  {seen[path.casefold()]} <-> {path}")
+PY
+)"
+    [[ -z "$clashes" ]] || { echo "$clashes"; fail "Paths that differ only in case would collide on the Mac."; }
 }
 
 sign() {
@@ -266,21 +311,31 @@ sign() {
     local file info
     for file in "$APP/Contents/MacOS/WebApp" "$APP/Contents/MacOS/ffmpeg" "$APP/Contents/Resources/python/bin/python3.11"; do
         info="$(rcodesign print-signature-info "$file" 2>&1 || true)"
-        [[ "$info" == *ADHOC* ]] || fail "No ad-hoc signature on ${file#"$DIST/"}"
+        [[ "$info" == *ADHOC* ]] || fail "No ad-hoc signature on ${file#"$STAGE/"}"
     done
 }
 
 package() {
     step "Zip for sharing"
     rm -f "$ZIP"
-    # -y keeps Python's symlinks; Finder's Archive Utility restores them and the permissions.
-    (cd "$DIST" && zip -qry -X "$ZIP" "Perene TTS.app" && zip -qj -X "$ZIP" "$HERE/How to open.txt")
+    # -y keeps the symlinks (Python's and Contents/MacOS's); Finder's Archive Utility restores them and the permissions.
+    (cd "$STAGE" && zip -qry -X "$ZIP" "Perene TTS.app" && zip -qj -X "$ZIP" "$HERE/How to open.txt")
+}
+
+publish() {
+    step "Copying the signed app and zip to dist/"
+    rm -rf "${DIST:?}/Perene TTS.app" "$DIST/$(basename "$ZIP")"
+    cp -a "$APP" "$DIST/"
+    cp "$ZIP" "$DIST/"
 }
 
 sizes() {
     step "Sizes"
-    du -sh "$APP/Contents/MacOS" "$APP/Contents/Resources/python" "$APP/Contents/Resources/model" \
-        "$APP/Contents/MacOS/ffmpeg" "$APP" "$ZIP" | sed "s|$ROOT/||"
+    local item  # one du per item: du counts a path only once across its arguments, so the app total would shrink
+    for item in "$APP/Contents/MacOS" "$APP/Contents/Resources/dotnet" "$APP/Contents/Resources/python" \
+        "$APP/Contents/Resources/model" "$APP/Contents/MacOS/ffmpeg" "$APP" "$ZIP"; do
+        du -sh "$item" | sed "s|$STAGE/||"
+    done
 }
 
 preflight
@@ -297,6 +352,7 @@ bundle
 check
 sign
 package
+publish
 sizes
 printf '\nDone: dist/Perene TTS.app and dist/Perene-TTS-macos-arm64.zip\n'
 printf 'On the Mac: make desktop-run (or double-click the app), and optionally make desktop-smoke.\n'

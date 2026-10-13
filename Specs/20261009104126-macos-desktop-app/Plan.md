@@ -103,14 +103,14 @@ There is still exactly one worker process and one batch runner thread, as AGENTS
 Desktop mode stays inside `WebApp` rather than a new project. There is one composition root and the static web assets pipeline is unchanged (`MapStaticAssets`, `RequiresAspNetWebAssets`). The only new package is `Photino.NET` 4.0.16. Its native library is never loaded in Docker mode.
 
 - **`WebApp/StudioApp.cs` (new):** moves the current `Program.cs` body into two methods. `AddStudio(WebApplicationBuilder, StudioHostOptions)` covers Razor components, the typed `TtsClient` with base address and optional `X-Perene-Token` default header, and the scoped `StudioSession`. `MapStudio(WebApplication)` covers the exception handler, static files, antiforgery, `/health`, `/error`, the three streaming routes and `StreamFromWorker`. Docker mode calls both with today's values (`Tts:BaseUrl` default `http://tts:5081/`), so FR24 holds by construction.
-- **`WebApp/Desktop/DesktopLaunch.cs` (new, pure):** `ShouldRun(string[] args, string baseDirectory)` returns true for `--desktop`, or when `baseDirectory` ends in `<name>.app/Contents/MacOS/`. Finder cannot pass arguments, so the bundle path is the trigger.
+- **`WebApp/Desktop/DesktopLaunch.cs` (new, pure):** `ShouldRun(string[] args, string baseDirectory)` returns true for `--desktop`, or when `baseDirectory` ends in `<name>.app/Contents/Resources/dotnet/` (the launcher in `Contents/MacOS` reaches `WebApp.dll` through a symlink, and the .NET host makes the link's target folder the base directory). Finder cannot pass arguments, so the bundle path is the trigger.
 - **`WebApp/Program.cs`:** `if (DesktopLaunch.ShouldRun(args, AppContext.BaseDirectory)) return DesktopHost.Run(args);`. The rest is the existing three-step build, now through `StudioApp`. The top-level body stays free of `await`, so the entry point keeps running on the process main thread. AppKit requires that.
 - **`WebApp/Desktop/DesktopHost.cs`:** runs synchronously on the main thread, because Photino/AppKit needs the creating thread for the run loop. Steps:
   1. Resolve `DesktopPaths`.
   2. Acquire `InstanceLock`. If that fails, show the native alert "Perene TTS is already running." and exit with code 0.
   3. `WorkerProcess.StartAsync().GetAwaiter().GetResult()`.
   4. Build the `WebApplication`:
-     - `ContentRootPath = AppContext.BaseDirectory` (`Contents/MacOS/`, where `wwwroot` and the static web assets manifest live)
+     - `ContentRootPath = AppContext.BaseDirectory` (`Contents/Resources/dotnet/`, where `wwwroot` and the static web assets manifest live)
      - `WebHost.ConfigureKestrel(o => o.Listen(IPAddress.Loopback, 0))`
      - `AllowedHosts=127.0.0.1`
      - `AddDataProtection().SetApplicationName("perene-tts").PersistKeysToFileSystem(paths.Keys)`
@@ -195,7 +195,7 @@ Components depend only on `IHostShell`.
 - In the app, `StudioSession.HealthText` and `Error` keep their existing wording ("Voice engine ready · MPS" or "· CPU" already comes from `/health`). Only FR10's "stopped unexpectedly" message is new. It is fed by an optional injected `IWorkerStatus`, which web mode does not register.
 
 ### Packaging the .app and zip (in Docker)
-Nothing is installed on the Mac. `make desktop-mac` builds the builder image `packaging/macos/Dockerfile` and runs `packaging/macos/build.sh` in it with the repository mounted. The image is based on the .NET 10 SDK and adds Python, llvm, zig 0.14.1, rcodesign 0.29.0, Pillow and huggingface_hub, all pinned and checksum-verified. The build works on any Docker host (the Mac's Docker Desktop on arm64, or x86-64 Linux), because every output targets macOS arm64. Downloads are cached in `build/macos/`, results go to `dist/`, and `STEPS="…"` reruns single steps.
+Nothing is installed on the Mac. `make desktop-mac` builds the builder image `packaging/macos/Dockerfile` and runs `packaging/macos/build.sh` in it with the repository mounted. The image is based on the .NET 10 SDK and adds Python, llvm, zig 0.14.1, rcodesign 0.29.0, Pillow and huggingface_hub, all pinned and checksum-verified. The build works on any Docker host (the Mac's Docker Desktop on arm64, or x86-64 Linux), because every output targets macOS arm64. Downloads are cached in `build/macos/`. The app is assembled, checked, signed and zipped on the `perene-tts-mac-builder-stage` Docker volume (`/stage`, the container's Linux disk), then `publish` copies both to `dist/`. `STEPS="…"` reruns single steps.
 
 | Step | Output |
 | --- | --- |
@@ -206,20 +206,23 @@ Nothing is installed on the Mac. `make desktop-mac` builds the builder image `pa
 | `ffmpeg_build` | LAME and FFmpeg cross-compiled with zig (above), then the configuration is checked for `--enable-libmp3lame` and no `--enable-gpl`. |
 | `webapp` | `dotnet publish -c Release -r osx-arm64 --self-contained` from a copy of `WebApp/`, so no `bin/` or `obj/` lands in the source tree. Run on Linux, the SDK does not sign the apphost; the `sign` step does. |
 | `bundle` | Assemble the layout below, write `Info.plist` from `Info.plist.in` and `VERSION`, and build `AppIcon.icns` with Pillow. |
-| `check` | `llvm-objdump --macho` on every Mach-O file: arm64 slice present, `minos` ≤ 14.0, and dependencies only `@rpath`/`@loader_path`/`@executable_path`, `/usr/lib` or `/System`. |
+| `check` | `llvm-objdump --macho` on every Mach-O file: arm64 slice present, `minos` ≤ 14.0, and dependencies only `@rpath`/`@loader_path`/`@executable_path`, `/usr/lib` or `/System`. It also fails on paths that differ only in case, which would collide on the Mac's case-insensitive disk. |
 | `sign` | `rcodesign sign` (ad-hoc, nested binaries first, then the bundle seal), then `rcodesign print-signature-info` must show `ADHOC` for WebApp, ffmpeg and python3.11. `rcodesign verify` does not handle ad-hoc signatures, so Apple's `codesign --verify --deep --strict` runs on the Mac in `make desktop-smoke`. |
-| `package` | `zip -ry` (keeps Python's symlinks) of the app plus `How to open.txt` → `dist/Perene-TTS-macos-arm64.zip`. A DMG needs `hdiutil`, which only exists on macOS. |
+| `package` | `zip -ry` (keeps the symlinks) of the app plus `How to open.txt` → `Perene-TTS-macos-arm64.zip`. A DMG needs `hdiutil`, which only exists on macOS. |
+| `publish` | Copies the signed app and the zip from `/stage` to `dist/`. |
 
 **Bundle layout:**
 ```
 Perene TTS.app/Contents/
 ├── Info.plist
-├── MacOS/
+├── MacOS/                      only Mach-O files and symlinks
 │   ├── WebApp                  CFBundleExecutable (.NET apphost, self-contained osx-arm64)
-│   ├── *.dll, *.dylib, Photino.Native.dylib, wwwroot/, *.staticwebassets.endpoints.json
+│   ├── WebApp.dll → ../Resources/dotnet/WebApp.dll
 │   └── ffmpeg                  minimal LGPL FFmpeg (zig cross-compiled)
 └── Resources/
     ├── AppIcon.icns
+    ├── dotnet/                 the rest of the publish output: *.dll, *.dylib, Photino.Native.dylib, wwwroot/, *.json
+    ├── pkuseg/                 spacy_pkuseg's spacy_ontonotes zip and folder (PKUSEG_HOME)
     ├── python/                 standalone CPython 3.11; site-packages holds the wheels and the worker's app/ package
     ├── model/                  weights + model-manifest.json
     └── licenses/               THIRD-PARTY-NOTICES.md + license texts
@@ -261,6 +264,9 @@ Phases 2–4 were implemented on Linux (Steam Deck), where `make test` passes. T
 - **The save dialog cannot suggest a name through Photino.** Photino's `ShowSaveFile` sets only the directory. `MacAppKit.ShowSavePanel` opens `NSSavePanel` with `nameFieldStringValue` on the main thread instead. The open-file and folder dialogs use Photino.
 - **Alerts before a window exist use `osascript`.** Photino's `ShowMessage` needs a native window instance. `NativeAlert` passes the text as `argv`, never as script.
 - **Docker-only build (user decision, 2026-10-12):** nothing native is installed on the Mac. PyInstaller and `hdiutil` were dropped: the worker is a standalone Python with macOS wheels in `Contents/Resources/python`, FFmpeg is cross-compiled with zig, signing uses rcodesign, and the app ships as a zip. Verified in the builder on Linux: FFmpeg cross-compiles (2.5 MB, arm64, `minos 14.0`, links only `libSystem`, LGPL with libmp3lame and pthreads); `rcodesign` produces an `ADHOC` signature; the standalone Python, the macOS wheels (1.4 GB, torch with `_C.cpython-311-darwin.so`) and the osx-arm64 .NET publish (115 MB; `WebApp` and `libcoreclr` at `minos 12.0`; `Photino.Native.dylib` universal at `minos 14.0`, linking only system frameworks) all build. FFmpeg needs a wrapper (`macos-cc`) because zig's linker rejects the `-Wl,-dynamic` flag that FFmpeg's darwin configure adds. Not yet run end to end: the model download, assembly, the full `check`, `sign` on the bundle, and the zip.
+- **Signing off the shared folder (2026-10-12):** the first full build on the Mac's Docker Desktop passed `check` (370 Mach-O files) but `rcodesign sign` failed with `No such file or directory` on `Contents/Resources/python/lib/python3.11/importlib/resources`, which exists. A minimal bundle reproduces this on any macOS-shared folder (not only OneDrive) and signs on the container's Linux disk. Assembly, `check`, `sign` and `package` therefore run on a Docker volume, and `publish` copies the results to `dist/`.
+- **Only Mach-O files in `Contents/MacOS` (2026-10-12):** `codesign --verify --deep --strict` then failed with `a sealed resource is missing or invalid`: rcodesign signs every Mach-O file but leaves the 353 non-Mach-O .NET files in `Contents/MacOS` (`.dll`, `.json`, `wwwroot`) out of the seal, since they fall under a nested-code rule, and it has no option to change that. The risk table's fallback does not hold either: Apple's `codesign --deep` signs those files only through `com.apple.cs.*` extended attributes, which `zip` drops, and without `--deep` it refuses them (`code object is not signed at all`). `bundle` therefore puts the publish output in `Contents/Resources/dotnet` and leaves only the apphost (`WebApp`) and a `WebApp.dll` symlink in `Contents/MacOS`; both tools seal a symlink as a link, and rcodesign's signature then passes Apple's `codesign --verify --deep --strict`. A first attempt that also moved the runtime's `.dylib` files to `Contents/MacOS` failed to start (`You must install .NET`): the apphost resolves the `WebApp.dll` symlink and searches the link's target folder for `libhostfxr.dylib`, so that folder is the app folder. `AppContext.BaseDirectory` and the content root are therefore `Contents/Resources/dotnet`, and `DesktopLaunch.BundleContents` recognizes that path (Microsoft Learn: ASP.NET Core directory structure — the publish folder is the content root; the symlink resolution was verified on this bundle).
+- **Runtime gaps found on the first launch (2026-10-12):** the model failed to load because resemble-perth imports `pkg_resources`, which the standalone Python lacks (venvs and the worker image include setuptools); the build now installs the standalone Python's own ensurepip wheel, `setuptools-79.0.1`. Chatterbox's tokenizer also starts spacy_pkuseg for every language, which downloaded `spacy_ontonotes.zip` from GitHub to `~/.pkuseg` and would fail offline; the build bundles that zip (SHA-256 pinned by spacy_pkuseg 1.0.1) and its unpacked folder in `Contents/Resources/pkuseg`, and the worker gets `PKUSEG_HOME` there.
 - **Device:** `DesktopHost` ships `TTS_DEVICE=auto`, pending the Phase 1b CPU/MPS measurement. A `TTS_DEVICE` set in the host's environment overrides it.
 - **Model license:** the model card at revision `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18` declares `license: mit`. This is recorded in `THIRD-PARTY-NOTICES.md` and still needs the user's confirmation before the DMG is shared.
 - **FFmpeg filters:** besides `aresample`, `aformat` and `anull`, the FFmpeg CLI needs the `abuffer` and `abuffersink` filters to build its audio graph, so the build enables them too.

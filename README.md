@@ -93,7 +93,7 @@ The app is built entirely inside Docker, so nothing is installed on the Mac: no 
 make desktop-mac     # writes dist/Perene TTS.app and dist/Perene-TTS-macos-arm64.zip
 ```
 
-This works the same on the Mac's Docker Desktop or on Linux (for example the Steam Deck). The first build needs the internet and about 15 GB of free disk space (the model alone is about 3 GB). Downloads are cached in `build/macos/`, so later builds are faster. `make desktop-mac STEPS="ffmpeg_build"` reruns a single step. The build prints the size of each part, the app and the zip. It fails if any binary isn't arm64, needs a macOS newer than 14.0, or links a library from outside the app. `make test` and the Docker workflows are unchanged.
+This works the same on the Mac's Docker Desktop or on Linux (for example the Steam Deck). The first build needs the internet and about 15 GB of free disk space (the model alone is about 3 GB). Downloads are cached in `build/macos/`, so later builds are faster. The app is signed and zipped on a Docker volume (`perene-tts-mac-builder-stage`), then copied to `dist/`. `make desktop-mac STEPS="ffmpeg_build"` reruns a single step. The build prints the size of each part, the app and the zip. It fails if any binary isn't arm64, needs a macOS newer than 14.0, or links a library from outside the app. `make test` and the Docker workflows are unchanged.
 
 On the Mac (nothing to install):
 

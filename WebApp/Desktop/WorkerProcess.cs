@@ -32,6 +32,8 @@ public sealed class WorkerProcess(DesktopPaths paths, string token, string devic
             ["TRANSFORMERS_OFFLINE"] = "1",
             ["HF_HOME"] = Path.Combine(paths.Cache, "huggingface"),
             ["NUMBA_CACHE_DIR"] = Path.Combine(paths.Cache, "numba"),
+            // Chatterbox's tokenizer starts spacy_pkuseg, which downloads its model unless it is here (build.sh bundles it).
+            ["PKUSEG_HOME"] = Path.Combine(paths.Resources, "pkuseg"),
         };
 
     /// <summary>Isolated mode (-I) ignores PYTHON* variables, user site-packages and the working directory, so only the

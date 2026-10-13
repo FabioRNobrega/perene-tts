@@ -55,7 +55,8 @@ class Worker:
                "TTS_MODEL_DIR": os.getenv("SMOKE_MODEL_DIR", str(contents / "Resources" / "model")),
                "TTS_FFMPEG": str(contents / "MacOS" / "ffmpeg"), "TTS_DEVICE": os.getenv("SMOKE_DEVICE", "auto"),
                "TTS_BATCH_ENABLED": "true", "PYTORCH_ENABLE_MPS_FALLBACK": "1", "HF_HUB_OFFLINE": "1",
-               "TRANSFORMERS_OFFLINE": "1", "HF_HOME": str(cache / "huggingface"), "NUMBA_CACHE_DIR": str(cache / "numba")}
+               "TRANSFORMERS_OFFLINE": "1", "HF_HOME": str(cache / "huggingface"), "NUMBA_CACHE_DIR": str(cache / "numba"),
+               "PKUSEG_HOME": str(contents / "Resources" / "pkuseg")}
         # Same launch as the desktop host (WorkerProcess.Arguments): isolated bundled Python, bytecode in the cache.
         command = [str(contents / "Resources" / "python" / "bin" / "python3.11"), "-I", "-X",
                    f"pycache_prefix={cache / 'pycache'}", "-m", "app.desktop"]

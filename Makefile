@@ -78,12 +78,13 @@ mac-down:
 	$(COMPOSE) -p $(COMPOSE_PROJECT)-mac -f docker-compose.mac.yml down --remove-orphans
 
 # macOS desktop app (packaging/macos/). Built entirely inside Docker on any machine; the Mac only runs the result.
+# The app is assembled and signed on the $(DESKTOP_BUILDER)-stage volume (rcodesign fails on macOS-shared folders), then copied to dist/.
 DESKTOP_BUILDER ?= $(COMPOSE_PROJECT)-mac-builder
 DESKTOP_APP = dist/Perene TTS.app
 DEVICE ?= auto
 desktop-mac:
 	docker build --tag $(DESKTOP_BUILDER) packaging/macos
-	docker run --rm -v "$(CURDIR):/src" -w /src $(DESKTOP_BUILDER) bash packaging/macos/build.sh $(STEPS)
+	docker run --rm -v "$(CURDIR):/src" -v $(DESKTOP_BUILDER)-stage:/stage -w /src $(DESKTOP_BUILDER) bash packaging/macos/build.sh $(STEPS)
 desktop-run:
 	open "$(DESKTOP_APP)"
 desktop-smoke:

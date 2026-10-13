@@ -104,7 +104,7 @@ public static class DesktopHost
 
     private static WebApplication BuildApp(DesktopPaths paths, WorkerProcess worker, string workerToken, IHostShell shell, DesktopAccess access)
     {
-        // Content root is Contents/MacOS, where the publish output keeps wwwroot and the static web assets manifest.
+        // Content root is Contents/Resources/dotnet, where the publish output keeps wwwroot and the static web assets manifest.
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory });
         // Host filtering rejects other Host headers (DNS rebinding); Learn: Kestrel host filtering.
         builder.Configuration["AllowedHosts"] = "127.0.0.1";

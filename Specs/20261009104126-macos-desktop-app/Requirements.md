@@ -71,7 +71,7 @@ These were agreed with the user before writing this spec. They are not open for 
 
 **Desktop host (`WebApp/`)**
 
-7. FR7 — `WebApp` runs in desktop mode when started with `--desktop`, or when its executable runs from inside an app bundle (`…/<name>.app/Contents/MacOS/`), because Finder cannot pass arguments. In desktop mode it:
+7. FR7 — `WebApp` runs in desktop mode when started with `--desktop`, or when it runs from inside an app bundle (its base directory is `…/<name>.app/Contents/Resources/dotnet/`, reached from the `Contents/MacOS/WebApp` launcher), because Finder cannot pass arguments. In desktop mode it:
    - binds Kestrel only to `127.0.0.1` with port `0` and reads the bound address through `IServerAddressesFeature`
    - sets `AllowedHosts` to `127.0.0.1`
    - opens a Photino window titled "Perene TTS" that loads that address.

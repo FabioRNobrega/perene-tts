@@ -5,7 +5,7 @@ namespace WebApp.Tests;
 
 public sealed class DesktopPathsTests : IDisposable
 {
-    private const string Bundle = "/Applications/Perene TTS.app/Contents/MacOS/";
+    private const string Bundle = "/Applications/Perene TTS.app/Contents/Resources/dotnet/";
     private readonly string temp = Directory.CreateTempSubdirectory("perene-paths-").FullName;
 
     [Fact]
@@ -95,6 +95,7 @@ public sealed class DesktopPathsTests : IDisposable
         Assert.Equal(["-I", "-X", "pycache_prefix=/Users/ana/Library/Caches/Perene TTS/pycache", "-m", "app.desktop"], arguments);
         Assert.DoesNotContain(arguments, argument => argument.Contains("token", StringComparison.OrdinalIgnoreCase));
         Assert.Equal("secret", WorkerProcess.Settings(paths, "secret", "auto")["TTS_API_TOKEN"]);
+        Assert.Equal(Path.Combine(paths.Resources, "pkuseg"), WorkerProcess.Settings(paths, "secret", "auto")["PKUSEG_HOME"]);
     }
 
     public void Dispose() => Directory.Delete(temp, recursive: true);

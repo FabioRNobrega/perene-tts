@@ -14,8 +14,8 @@ public sealed record DesktopPaths(
 
     /// <summary>macOS per-user locations under home; resources come from the bundle, or from PERENE_RESOURCES
     /// (an unpacked layout with model/, licenses/, python/ and ffmpeg) for unbundled development runs.
-    /// Python and its packages live in Contents/Resources: dotted folders (*.dist-info) under Contents/MacOS would be
-    /// treated as nested bundles when signing.</summary>
+    /// Python, its packages and the .NET publish output live in Contents/Resources: Contents/MacOS holds only Mach-O
+    /// files (the launcher and ffmpeg), because anything else there is treated as nested code when signing.</summary>
     public static DesktopPaths Resolve(string home, string baseDirectory, IDictionary environment)
     {
         var data = Path.Combine(home, "Library", "Application Support", AppName);
