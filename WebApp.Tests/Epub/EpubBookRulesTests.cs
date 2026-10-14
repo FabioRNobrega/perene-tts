@@ -55,6 +55,10 @@ public sealed class EpubBookRulesTests
     [InlineData(" SV ", "sv")]
     [InlineData("", "")]
     [InlineData(null, "")]
+    [InlineData("eng", "en")]
+    [InlineData("POR-BR", "pt")]
+    [InlineData("swe", "sv")]
+    [InlineData("fra", "fra")]
     public void PrimaryLanguageIsTheLowerCasePrimarySubtag(string? tag, string expected)
     {
         Assert.Equal(expected, EpubBookRules.PrimaryLanguage(tag));
@@ -66,6 +70,8 @@ public sealed class EpubBookRulesTests
     [InlineData("pt-BR", "en", true)]
     [InlineData("", "pt", false)]
     [InlineData("sv", "", false)]
+    [InlineData("eng", "en", false)]
+    [InlineData("eng", "pt", true)]
     public void LanguageMismatchComparesPrimarySubtags(string book, string voice, bool mismatch)
     {
         Assert.Equal(mismatch, EpubBookRules.LanguageMismatch(book, voice));
@@ -88,10 +94,72 @@ public sealed class EpubBookRulesTests
     }
 
     [Fact]
-    public void TrackErrorsRequireAChapter()
+    public void TrackErrorsRequireABookItem()
     {
         Assert.Equal([EpubBookRules.NoChaptersMessage], EpubBookRules.TrackErrors([new("intro.txt", "", 5, 5, null)]));
         Assert.Equal([EpubBookRules.NoChaptersMessage], EpubBookRules.TrackErrors([]));
+        Assert.Equal(["Include at least one part."], EpubBookRules.TrackErrors([], BookStructure.Parts));
+        Assert.Empty(EpubBookRules.TrackErrors([new("introduction.txt", "", 5, 5, 1, BookItemKind.Section)]));
+    }
+
+    [Theory]
+    [InlineData("Introduction", true)]
+    [InlineData("  epilogue. ", true)]
+    [InlineData("Introdução", true)]
+    [InlineData("Prólogo", true)]
+    [InlineData("Förord", true)]
+    [InlineData("Efterord", true)]
+    [InlineData("Acknowledgments", false)]
+    [InlineData("About the Author", false)]
+    [InlineData("Copyright", false)]
+    [InlineData("", false)]
+    public void SectionKeywordRecognisesNarrativeSectionLabels(string label, bool expected)
+    {
+        Assert.Equal(expected, EpubBookRules.SectionKeyword(label));
+    }
+
+    [Fact]
+    public void SectionFileNamesAreSlugsThatAvoidReservedAndDuplicateNames()
+    {
+        var used = new HashSet<string>(StringComparer.Ordinal);
+
+        Assert.Equal("introduction.txt", EpubBookRules.SectionFileName("Introduction", 1, used));
+        Assert.Equal("epilogo.txt", EpubBookRules.SectionFileName("Epílogo", 2, used));
+        Assert.Equal("intro-2.txt", EpubBookRules.SectionFileName("Intro", 3, used));
+        Assert.Equal("chapter-001-2.txt", EpubBookRules.SectionFileName("Chapter 001", 4, used));
+        Assert.Equal("introduction-2.txt", EpubBookRules.SectionFileName("INTRODUCTION!", 5, used));
+        Assert.Equal("section-06.txt", EpubBookRules.SectionFileName("…", 6, used));
+    }
+
+    [Theory]
+    [InlineData("Introduction", "Introduction.")]
+    [InlineData("What Now?", "What Now?")]
+    [InlineData("  The   End. ", "The End.")]
+    public void SectionHeadingEndsOnce(string title, string expected)
+    {
+        Assert.Equal(expected, EpubBookRules.SectionHeading(title));
+    }
+
+    [Fact]
+    public void SplitIntoPartsBalancesAtParagraphBoundaries()
+    {
+        var paragraphs = Enumerable.Range(0, 90).Select(_ => new string('a', 1000)).ToList();
+
+        var parts = EpubBookRules.SplitIntoParts(paragraphs, 30_000);
+
+        Assert.Equal([30, 30, 30], parts.Select(part => part.Count));
+        Assert.Equal(paragraphs, parts.SelectMany(part => part));
+    }
+
+    [Fact]
+    public void SplitIntoPartsRoundsUpAndKeepsLongParagraphsWhole()
+    {
+        var justOver = Enumerable.Range(0, 30_001).Select(_ => "a").ToList();
+        Assert.Equal(2, EpubBookRules.SplitIntoParts(justOver, 30_000).Count);
+        var single = EpubBookRules.SplitIntoParts([new string('b', 40_000)], 30_000);
+        Assert.Equal(new string('b', 40_000), Assert.Single(Assert.Single(single)));
+        Assert.Empty(EpubBookRules.SplitIntoParts([], 30_000));
+        Assert.Equal("part-012.txt", EpubBookRules.TrackFileName(BookTrackKind.Part, 12));
     }
 
     [Fact]

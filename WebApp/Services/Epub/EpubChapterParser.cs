@@ -7,7 +7,10 @@ using Microsoft.Extensions.Options;
 using PereneTts.Models;
 
 // Ported from book-notes-ia/services/EbookParseService.Api/Services/EpubChapterParser.cs.
-// Only the input boundary changed: a seekable stream replaces the input-folder path, and the book text is capped.
+// The input boundary changed: a seekable stream replaces the input-folder path, and the book text is capped.
+// Perene discovery additions (Specs/20261014112604-epub-chapter-discovery-and-fallback): chapter-word labels,
+// whole-document and body-anchored targets, epub:type chapter confirmation, named sections, footnote skipping,
+// label-echo removal, continuation that stops at any TOC target, and reading-order text for the parts fallback.
 namespace PereneTts.Services.Epub;
 
 public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> options) : IEpubChapterParser
@@ -17,11 +20,25 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
     private const string DublinCoreNamespace = "http://purl.org/dc/elements/1.1/";
     private static readonly HashSet<string> NarrativeBlocks =
         ["p", "blockquote", "li", "dt", "dd", "h3", "h4", "h5", "h6"];
+    private static readonly HashSet<string> FootnoteTypes =
+        ["footnote", "endnote", "rearnote", "footnotes", "endnotes", "rearnotes"];
     private static readonly HashSet<string> ExcludedElements =
         ["script", "style", "nav", "svg", "math", "audio", "video", "canvas"];
     private readonly EpubParserOptions _options = options.Value;
 
-    public Task<ParsedEpubBook> ParseAsync(Stream epub, CancellationToken cancellationToken = default)
+    public Task<ParsedEpubBook> ParseAsync(Stream epub, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Read(epub, requireNavigation: true, cancellationToken,
+            (entries, metadata) => DiscoverBook(entries, metadata, cancellationToken)));
+
+    public Task<EpubReadingText> ReadReadingOrderAsync(Stream epub, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Read(epub, requireNavigation: false, cancellationToken,
+            (entries, metadata) => ReadSpineText(entries, metadata, cancellationToken)));
+
+    private T Read<T>(
+        Stream epub,
+        bool requireNavigation,
+        CancellationToken cancellationToken,
+        Func<Dictionary<string, ZipArchiveEntry>, PackageMetadata, T> read)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -56,37 +73,7 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
 
             var packagePath = NormalizeArchivePath(string.Empty, rootfile);
             var package = LoadXml(RequireEntry(entries, packagePath), packagePath);
-            var metadata = ReadPackage(package, packagePath);
-            var navigation = LoadXml(RequireEntry(entries, metadata.NavigationPath), metadata.NavigationPath);
-            IReadOnlyList<ParsedChapter> chapters;
-            var language = metadata.Language;
-            if (metadata.NavigationKind == NavigationKind.Epub3)
-            {
-                if (language.Length == 0)
-                {
-                    throw InvalidEpub("The EPUB package is missing required language metadata.");
-                }
-
-                chapters = DiscoverEpub3Chapters(entries, metadata, navigation, cancellationToken);
-            }
-            else
-            {
-                var discovery = DiscoverNcxChapters(
-                    entries,
-                    metadata,
-                    navigation,
-                    requireInferredLanguage: language.Length == 0,
-                    cancellationToken);
-                chapters = discovery.Chapters;
-                if (language.Length == 0)
-                {
-                    language = discovery.InferredLanguage
-                        ?? throw InvalidEpub("The EPUB has no consistent explicit chapter language.");
-                }
-            }
-
-            EnforceBookCharacterLimit(chapters);
-            return Task.FromResult(new ParsedEpubBook(metadata.Title, language, chapters));
+            return read(entries, ReadPackage(package, packagePath, requireNavigation));
         }
         catch (EpubParseException)
         {
@@ -118,10 +105,64 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         }
     }
 
-    private void EnforceBookCharacterLimit(IReadOnlyList<ParsedChapter> chapters)
+    private ParsedEpubBook DiscoverBook(
+        Dictionary<string, ZipArchiveEntry> entries,
+        PackageMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        var navigation = LoadXml(RequireEntry(entries, metadata.NavigationPath), metadata.NavigationPath);
+        IReadOnlyList<ParsedChapter> chapters;
+        var language = metadata.Language;
+        if (metadata.NavigationKind == NavigationKind.Epub3)
+        {
+            if (language.Length == 0)
+            {
+                throw InvalidEpub("The EPUB package is missing required language metadata.");
+            }
+
+            chapters = DiscoverEpub3Chapters(entries, metadata, navigation, cancellationToken);
+        }
+        else
+        {
+            var discovery = DiscoverNcxChapters(
+                entries,
+                metadata,
+                navigation,
+                requireInferredLanguage: language.Length == 0,
+                cancellationToken);
+            chapters = discovery.Chapters;
+            if (language.Length == 0)
+            {
+                language = discovery.InferredLanguage
+                    ?? throw InvalidEpub("The EPUB has no consistent explicit chapter language.");
+            }
+        }
+
+        EnforceBookCharacterLimit(chapters.SelectMany(chapter => chapter.Paragraphs));
+        return new ParsedEpubBook(metadata.Title, language, chapters);
+    }
+
+    // Fallback text: every spine XHTML document in reading order, with the same extraction rules and limits.
+    private EpubReadingText ReadSpineText(
+        Dictionary<string, ZipArchiveEntry> entries,
+        PackageMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        var paragraphs = new List<string>();
+        foreach (var path in metadata.SpineXhtmlPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            paragraphs.AddRange(ExtractDocumentParagraphs(LoadXml(RequireEntry(entries, path), path)));
+        }
+
+        EnforceBookCharacterLimit(paragraphs);
+        return new EpubReadingText(metadata.Title, metadata.Language, paragraphs);
+    }
+
+    private void EnforceBookCharacterLimit(IEnumerable<string> paragraphs)
     {
         long total = 0;
-        foreach (var paragraph in chapters.SelectMany(chapter => chapter.Paragraphs))
+        foreach (var paragraph in paragraphs)
         {
             total += paragraph.Length;
             if (total > _options.MaxBookCharacters)
@@ -178,7 +219,7 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         return entries;
     }
 
-    private PackageMetadata ReadPackage(XDocument package, string packagePath)
+    private PackageMetadata ReadPackage(XDocument package, string packagePath, bool requireNavigation)
     {
         var root = package.Root ?? throw InvalidEpub("The EPUB package document is empty.");
         var opf = root.Name.Namespace;
@@ -226,11 +267,6 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         }
 
         var navigationItems = manifest.Values.Where(item => item.Properties.Contains("nav")).ToList();
-        if (navigationItems.Count > 1)
-        {
-            throw UnsupportedStructure("The EPUB declares multiple EPUB 3 navigation documents.");
-        }
-
         var xhtmlPaths = manifest.Values
             .Where(item => string.Equals(item.MediaType, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase))
             .Select(item => item.Path)
@@ -239,6 +275,17 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
             .Where(id => string.Equals(manifest[id].MediaType, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase))
             .Select(id => manifest[id].Path)
             .ToList();
+
+        // The parts fallback reads only the spine, so it does not depend on usable navigation.
+        if (!requireNavigation)
+        {
+            return new PackageMetadata(title, language, string.Empty, NavigationKind.Ncx, xhtmlPaths, spineXhtmlPaths);
+        }
+
+        if (navigationItems.Count > 1)
+        {
+            throw UnsupportedStructure("The EPUB declares multiple EPUB 3 navigation documents.");
+        }
 
         if (navigationItems.Count == 1)
         {
@@ -281,6 +328,7 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         var candidates = new List<ChapterCandidate>();
         var numericLabels = new HashSet<int>();
         var targets = new HashSet<string>(StringComparer.Ordinal);
+        var targetPaths = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var link in toc.Descendants().Where(element => element.Name.LocalName == "a"))
         {
@@ -297,58 +345,52 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
                 throw UnsupportedStructure("A table-of-contents target is outside the declared XHTML manifest.");
             }
 
+            targetPaths.Add(resourcePath);
             var document = GetContentDocument(resourcePath, entries, documentCache);
-            var target = document.Root?.DescendantsAndSelf()
-                .FirstOrDefault(element => (string?)element.Attribute("id") == fragment
-                    || (string?)element.Attribute(XNamespace.Xml + "id") == fragment);
-            if (target is null)
+            XElement? target = null;
+            if (fragment is not null)
             {
-                throw UnsupportedStructure("A table-of-contents fragment target is missing.");
+                target = FindTarget(document, fragment)
+                    ?? throw UnsupportedStructure("A table-of-contents fragment target is missing.");
             }
 
             var label = NormalizeWhitespace(link.Value);
-            var semanticBoundary = target.AncestorsAndSelf()
-                .FirstOrDefault(element => IsStructural(element) && HasEpubType(element, "chapter"));
             var numericMatch = NumericLabel().Match(label);
+            if (!numericMatch.Success)
+            {
+                numericMatch = ChapterWordLabel().Match(label);
+            }
+
             var numeric = numericMatch.Success ? int.Parse(numericMatch.Groups[1].Value, CultureInfo.InvariantCulture) : (int?)null;
-            var numericBoundary = numeric.HasValue ? FindNumericBoundary(target, numeric.Value) : null;
-            if (semanticBoundary is null && numericBoundary is null)
+            var wholeDocument = target is null || IsDocumentRoot(target);
+            var candidate = wholeDocument
+                ? WholeDocumentCandidate(resourcePath, document, label, numeric, allowUnnumberedChapters: true)
+                : FragmentCandidate(resourcePath, target!, label, numeric, allowUnnumberedChapters: true);
+            if (candidate is null)
             {
                 continue;
             }
 
-            var key = resourcePath + "#" + fragment;
+            var key = wholeDocument ? resourcePath : resourcePath + "#" + fragment;
             if (!targets.Add(key))
             {
                 throw UnsupportedStructure("The EPUB table of contents contains a duplicate chapter target.");
             }
 
-            if (numeric.HasValue && !numericLabels.Add(numeric.Value))
+            if (candidate.Kind == BookItemKind.Chapter && numeric.HasValue && !numericLabels.Add(numeric.Value))
             {
                 throw UnsupportedStructure("The EPUB table of contents contains a duplicate chapter number.");
             }
 
-            candidates.Add(new ChapterCandidate(resourcePath, target, semanticBoundary ?? numericBoundary!, numeric, IsWholeDocumentTarget: false));
+            candidates.Add(candidate);
         }
 
-        if (candidates.Count == 0)
+        if (!candidates.Any(candidate => candidate.Kind == BookItemKind.Chapter))
         {
             throw UnsupportedStructure("No chapters matched the supported EPUB navigation structures.");
         }
 
-        var chapters = new List<ParsedChapter>(candidates.Count);
-        for (var index = 0; index < candidates.Count; index++)
-        {
-            var paragraphs = ExtractParagraphs(candidates[index], candidates);
-            if (paragraphs.Count == 0)
-            {
-                throw UnsupportedStructure("A discovered chapter contains no narration-ready text.");
-            }
-
-            chapters.Add(new ParsedChapter(index + 1, paragraphs));
-        }
-
-        return chapters;
+        return BuildItems(candidates, targetPaths, metadata, entries, documentCache, useDeclaredNumbers: false);
     }
 
     private NcxDiscovery DiscoverNcxChapters(
@@ -370,6 +412,7 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         var candidates = new List<ChapterCandidate>();
         var numericLabels = new HashSet<int>();
         var targets = new HashSet<string>(StringComparer.Ordinal);
+        var targetPaths = new HashSet<string>(StringComparer.Ordinal);
         var inferredLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? inferredLanguage = null;
 
@@ -379,13 +422,24 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
             var navLabel = navPoint.Elements().FirstOrDefault(element => element.Name.LocalName == "navLabel");
             var label = NormalizeWhitespace(navLabel?.Descendants()
                 .FirstOrDefault(element => element.Name.LocalName == "text")?.Value);
+            var content = navPoint.Elements().FirstOrDefault(element => element.Name.LocalName == "content");
+            var href = (string?)content?.Attribute("src");
             if (!TryParseNcxChapterNumber(label, out var numeric))
             {
+                // Unnumbered entries never fail the import: they only mark continuation stops or become named sections.
+                if (TryUnnumberedNcxEntry(label, href, metadata, entries, documentCache, targetPaths) is { } section)
+                {
+                    if (!targets.Add(section.TargetKey))
+                    {
+                        throw UnsupportedStructure("The EPUB 2 NCX contains a duplicate chapter target.");
+                    }
+
+                    candidates.Add(section.Candidate);
+                }
+
                 continue;
             }
 
-            var content = navPoint.Elements().FirstOrDefault(element => element.Name.LocalName == "content");
-            var href = (string?)content?.Attribute("src");
             if (string.IsNullOrWhiteSpace(href))
             {
                 throw UnsupportedStructure("An EPUB 2 NCX chapter entry has no content target.");
@@ -397,34 +451,22 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
                 throw UnsupportedStructure("An EPUB 2 NCX chapter target is outside the declared XHTML manifest.");
             }
 
+            targetPaths.Add(resourcePath);
             var document = GetContentDocument(resourcePath, entries, documentCache);
-            XElement target;
-            XElement? boundary;
-            if (fragment is not null)
+            ChapterCandidate candidate;
+            if (fragment is not null
+                && (FindTarget(document, fragment) ?? throw UnsupportedStructure("An EPUB 2 NCX chapter fragment target is missing.")) is var target
+                && !IsDocumentRoot(target))
             {
-                target = document.Root?.DescendantsAndSelf()
-                    .FirstOrDefault(element => (string?)element.Attribute("id") == fragment
-                        || (string?)element.Attribute(XNamespace.Xml + "id") == fragment)
-                    ?? throw UnsupportedStructure("An EPUB 2 NCX chapter fragment target is missing.");
-                boundary = FindNumericBoundary(target, numeric);
+                var boundary = FindNumericBoundary(target, numeric) ?? FindSemanticChapter(target)
+                    ?? throw UnsupportedStructure("An EPUB 2 NCX chapter target does not match its numeric heading.");
+                candidate = new ChapterCandidate(resourcePath, target, boundary, numeric, IsWholeDocumentTarget: false, BookItemKind.Chapter, label);
             }
             else
             {
-                var matchingHeadings = document.Descendants()
-                    .Where(element => IsHeading(element) && HasMatchingNumericHeading(element, numeric))
-                    .ToList();
-                if (matchingHeadings.Count != 1)
-                {
-                    throw UnsupportedStructure("An EPUB 2 NCX chapter does not have one matching numeric heading.");
-                }
-
-                target = matchingHeadings[0];
-                boundary = target;
-            }
-
-            if (boundary is null)
-            {
-                throw UnsupportedStructure("An EPUB 2 NCX chapter target does not match its numeric heading.");
+                fragment = null;
+                candidate = WholeDocumentCandidate(resourcePath, document, label, numeric, allowUnnumberedChapters: false)
+                    ?? throw UnsupportedStructure("An EPUB 2 NCX chapter does not have one matching numeric heading.");
             }
 
             var key = fragment is null ? resourcePath : resourcePath + "#" + fragment;
@@ -440,7 +482,7 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
 
             if (requireInferredLanguage)
             {
-                var chapterLanguage = ResolveChapterLanguage(target, boundary);
+                var chapterLanguage = ResolveChapterLanguage(candidate.Target, candidate.Boundary);
                 if (chapterLanguage.Length == 0)
                 {
                     throw InvalidEpub("An EPUB 2 NCX chapter is missing required language metadata.");
@@ -454,27 +496,201 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
                 }
             }
 
-            candidates.Add(new ChapterCandidate(resourcePath, target, boundary, numeric, fragment is null));
+            candidates.Add(candidate);
         }
 
-        if (candidates.Count == 0)
+        if (!candidates.Any(candidate => candidate.Kind == BookItemKind.Chapter))
         {
             throw UnsupportedStructure("No chapters matched the supported EPUB 2 NCX structure.");
         }
 
-        var chapters = new List<ParsedChapter>(candidates.Count);
+        return new NcxDiscovery(
+            BuildItems(candidates, targetPaths, metadata, entries, documentCache, useDeclaredNumbers: true),
+            inferredLanguage);
+    }
+
+    // A malformed or missing non-chapter resource is ignored, as it was before sections existed.
+    private (ChapterCandidate Candidate, string TargetKey)? TryUnnumberedNcxEntry(
+        string label,
+        string? href,
+        PackageMetadata metadata,
+        IReadOnlyDictionary<string, ZipArchiveEntry> entries,
+        IDictionary<string, XDocument> documentCache,
+        ISet<string> targetPaths)
+    {
+        if (string.IsNullOrWhiteSpace(href))
+        {
+            return null;
+        }
+
+        try
+        {
+            var (resourcePath, fragment) = ResolveNcxTarget(metadata.NavigationPath, href);
+            if (!metadata.XhtmlPaths.Contains(resourcePath))
+            {
+                return null;
+            }
+
+            targetPaths.Add(resourcePath);
+            var document = GetContentDocument(resourcePath, entries, documentCache);
+            var target = fragment is null ? null : FindTarget(document, fragment);
+            if (fragment is not null && target is null)
+            {
+                return null;
+            }
+
+            var wholeDocument = target is null || IsDocumentRoot(target);
+            var candidate = wholeDocument
+                ? WholeDocumentCandidate(resourcePath, document, label, null, allowUnnumberedChapters: false)
+                : FragmentCandidate(resourcePath, target!, label, null, allowUnnumberedChapters: false);
+            return candidate is null ? null : (candidate, wholeDocument ? resourcePath : resourcePath + "#" + fragment);
+        }
+        catch (EpubParseException)
+        {
+            return null;
+        }
+    }
+
+    // Fragment target: numbered chapters need a matching heading or epub:type chapter; unnumbered entries may be
+    // named sections, and (EPUB 3 only) remaining semantic chapters stay chapters as in the reference.
+    private static ChapterCandidate? FragmentCandidate(
+        string resourcePath,
+        XElement target,
+        string label,
+        int? numeric,
+        bool allowUnnumberedChapters)
+    {
+        var semanticBoundary = FindSemanticChapter(target);
+        if (numeric.HasValue)
+        {
+            var boundary = semanticBoundary ?? FindNumericBoundary(target, numeric.Value);
+            return boundary is null
+                ? null
+                : new ChapterCandidate(resourcePath, target, boundary, numeric, IsWholeDocumentTarget: false, BookItemKind.Chapter, label);
+        }
+
+        if (IsNamedSection(label, target.AncestorsAndSelf().Where(IsStructural))
+            && (IsStructural(target) || IsHeading(target)))
+        {
+            return new ChapterCandidate(resourcePath, target, target, null, IsWholeDocumentTarget: false, BookItemKind.Section, label);
+        }
+
+        return allowUnnumberedChapters && semanticBoundary is not null
+            ? new ChapterCandidate(resourcePath, target, semanticBoundary, null, IsWholeDocumentTarget: false, BookItemKind.Chapter, label)
+            : null;
+    }
+
+    // Whole-document target (no fragment, or a fragment on body/html): numbered chapters are confirmed by exactly
+    // one matching numeric heading or by the document's first structural element being an epub:type chapter.
+    private static ChapterCandidate? WholeDocumentCandidate(
+        string resourcePath,
+        XDocument document,
+        string label,
+        int? numeric,
+        bool allowUnnumberedChapters)
+    {
+        var root = document.Root ?? throw InvalidEpub("A required EPUB XML document is empty.");
+        var firstStructure = root.Descendants().FirstOrDefault(IsStructural);
+        var semantic = firstStructure is not null && HasEpubType(firstStructure, "chapter") ? firstStructure : null;
+        if (numeric.HasValue)
+        {
+            var headings = root.Descendants()
+                .Where(element => IsHeading(element) && HasMatchingNumericHeading(element, numeric.Value))
+                .ToList();
+            if (headings.Count == 1)
+            {
+                return new ChapterCandidate(resourcePath, headings[0], headings[0], numeric, IsWholeDocumentTarget: true, BookItemKind.Chapter, label);
+            }
+
+            return semantic is null
+                ? null
+                : new ChapterCandidate(resourcePath, semantic, semantic, numeric, IsWholeDocumentTarget: true, BookItemKind.Chapter, label);
+        }
+
+        if (IsNamedSection(label, firstStructure is null ? [] : [firstStructure]))
+        {
+            return new ChapterCandidate(resourcePath, root, root, null, IsWholeDocumentTarget: true, BookItemKind.Section, label);
+        }
+
+        return allowUnnumberedChapters && semantic is not null
+            ? new ChapterCandidate(resourcePath, semantic, semantic, null, IsWholeDocumentTarget: true, BookItemKind.Chapter, label)
+            : null;
+    }
+
+    private static bool IsNamedSection(string label, IEnumerable<XElement> structures)
+    {
+        XNamespace epub = EpubNamespace;
+        return EpubBookRules.SectionKeyword(label)
+            || structures.Any(element => Tokenize((string?)element.Attribute(epub + "type")).Overlaps(EpubBookRules.SectionTypes));
+    }
+
+    private static XElement? FindSemanticChapter(XElement target) =>
+        target.AncestorsAndSelf().FirstOrDefault(element => IsStructural(element) && HasEpubType(element, "chapter"));
+
+    private static XElement? FindTarget(XDocument document, string fragment) =>
+        document.Root?.DescendantsAndSelf()
+            .FirstOrDefault(element => (string?)element.Attribute("id") == fragment
+                || (string?)element.Attribute(XNamespace.Xml + "id") == fragment);
+
+    private static bool IsDocumentRoot(XElement element) => element.Name.LocalName is "body" or "html";
+
+    // Extracts every candidate, drops empty sections and label echoes, and assigns book order.
+    private List<ParsedChapter> BuildItems(
+        IReadOnlyList<ChapterCandidate> candidates,
+        IReadOnlySet<string> targetPaths,
+        PackageMetadata metadata,
+        IReadOnlyDictionary<string, ZipArchiveEntry> entries,
+        IDictionary<string, XDocument> documentCache,
+        bool useDeclaredNumbers)
+    {
+        var items = new List<ParsedChapter>(candidates.Count);
+        int chapters = 0, sections = 0;
         foreach (var candidate in candidates)
         {
-            var paragraphs = ExtractNcxParagraphs(candidate, candidates, metadata.SpineXhtmlPaths, entries, documentCache);
+            var paragraphs = TrimLabelEcho(
+                ExtractWithContinuation(candidate, candidates, targetPaths, metadata.SpineXhtmlPaths, entries, documentCache),
+                candidate);
+            if (candidate.Kind == BookItemKind.Section)
+            {
+                if (paragraphs.Count > 0)
+                {
+                    items.Add(new ParsedChapter(++sections, paragraphs, BookItemKind.Section, candidate.Label));
+                }
+
+                continue;
+            }
+
             if (paragraphs.Count == 0)
             {
                 throw UnsupportedStructure("A discovered chapter contains no narration-ready text.");
             }
 
-            chapters.Add(new ParsedChapter(candidate.DeclaredNumber!.Value, paragraphs));
+            chapters++;
+            items.Add(new ParsedChapter(useDeclaredNumbers ? candidate.DeclaredNumber!.Value : chapters, paragraphs));
         }
 
-        return new NcxDiscovery(chapters, inferredLanguage);
+        return items.Select((item, index) => item with { Order = index + 1 }).ToList();
+    }
+
+    // Removes a first paragraph that only repeats the item's own label ("Chapter 1", "1.", or the section title).
+    private static IReadOnlyList<string> TrimLabelEcho(IReadOnlyList<string> paragraphs, ChapterCandidate candidate)
+    {
+        if (paragraphs.Count == 0)
+        {
+            return paragraphs;
+        }
+
+        static string Echo(string value) => NormalizeWhitespace(value).TrimEnd('.', ':').Trim();
+        var first = Echo(paragraphs[0]);
+        var echoes = string.Equals(first, Echo(candidate.Label), StringComparison.OrdinalIgnoreCase);
+        if (!echoes && candidate.Kind == BookItemKind.Chapter && candidate.DeclaredNumber is { } number)
+        {
+            var match = ChapterWordOnly().Match(first);
+            echoes = first == number.ToString(CultureInfo.InvariantCulture)
+                || (match.Success && match.Groups[1].Value == number.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return echoes ? paragraphs.Skip(1).ToList() : paragraphs;
     }
 
     private static string ResolveChapterLanguage(XElement target, XElement boundary)
@@ -534,9 +750,12 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
                 : null;
     }
 
-    private IReadOnlyList<string> ExtractNcxParagraphs(
+    // A whole-document item continues through following spine documents until the next document any TOC entry
+    // targets (chapter, section, or ignored entry), so the last chapter never absorbs back matter.
+    private IReadOnlyList<string> ExtractWithContinuation(
         ChapterCandidate candidate,
         IReadOnlyList<ChapterCandidate> candidates,
+        IReadOnlySet<string> targetPaths,
         IReadOnlyList<string> spineXhtmlPaths,
         IReadOnlyDictionary<string, ZipArchiveEntry> entries,
         IDictionary<string, XDocument> documentCache)
@@ -550,15 +769,12 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         var start = FindSpinePathIndex(spineXhtmlPaths, candidate.ResourcePath);
         if (start < 0)
         {
-            throw UnsupportedStructure("An EPUB 2 NCX chapter target is outside the reading spine.");
+            return candidate.Kind == BookItemKind.Section
+                ? paragraphs
+                : throw UnsupportedStructure("A chapter target is outside the reading spine.");
         }
 
-        var nextTargetIndexes = candidates
-            .Where(other => other.IsWholeDocumentTarget && !ReferenceEquals(other, candidate))
-            .Select(other => FindSpinePathIndex(spineXhtmlPaths, other.ResourcePath))
-            .Where(index => index > start);
-        var end = nextTargetIndexes.DefaultIfEmpty(spineXhtmlPaths.Count).Min();
-        for (var index = start + 1; index < end; index++)
+        for (var index = start + 1; index < spineXhtmlPaths.Count && !targetPaths.Contains(spineXhtmlPaths[index]); index++)
         {
             var document = GetContentDocument(spineXhtmlPaths[index], entries, documentCache);
             paragraphs.AddRange(ExtractDocumentParagraphs(document));
@@ -583,7 +799,7 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
     private static bool TryParseNcxChapterNumber(string label, out int number)
     {
         number = 0;
-        var match = NcxChapterLabel().Match(label);
+        var match = ChapterWordLabel().Match(label);
         if (!match.Success)
         {
             match = NumericLabel().Match(label);
@@ -612,7 +828,7 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         IReadOnlyList<ChapterCandidate> allCandidates)
     {
         IEnumerable<XElement> scope;
-        if (IsStructural(candidate.Boundary))
+        if (IsStructural(candidate.Boundary) || candidate.Boundary.Parent is null)
         {
             scope = candidate.Boundary.Descendants();
         }
@@ -643,12 +859,31 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
                 : element.Descendants().Where(descendant => NarrativeBlocks.Contains(descendant.Name.LocalName)))
             .Where(element => !element.Ancestors().Any(ancestor => ExcludedElements.Contains(ancestor.Name.LocalName)))
             .Distinct()
-            .Where(element => !element.Ancestors().Any(ancestor => NarrativeBlocks.Contains(ancestor.Name.LocalName)));
+            .Where(element => !element.Ancestors().Any(ancestor => NarrativeBlocks.Contains(ancestor.Name.LocalName)))
+            .Where(element => !element.AncestorsAndSelf().Any(IsFootnote) && !IsFootnoteHeading(element));
 
         return blocks
             .Select(ReadNarrativeText)
             .Where(text => text.Length > 0)
             .ToList();
+    }
+
+    private static bool IsFootnote(XElement element)
+    {
+        XNamespace epub = EpubNamespace;
+        return Tokenize((string?)element.Attribute(epub + "type")).Overlaps(FootnoteTypes);
+    }
+
+    // A "Footnotes" heading followed only by footnotes is part of the notes, not the narration.
+    private static bool IsFootnoteHeading(XElement element)
+    {
+        if (!IsHeading(element))
+        {
+            return false;
+        }
+
+        var following = element.ElementsAfterSelf().ToList();
+        return following.Count > 0 && following.All(IsFootnote);
     }
 
     private static string ReadNarrativeText(XElement block)
@@ -740,12 +975,22 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         CloseInput = false
     };
 
-    private static (string Path, string Fragment) ResolveNavigationTarget(string referringPath, string href)
+    private static (string Path, string? Fragment) ResolveNavigationTarget(string referringPath, string href)
     {
-        var hash = href.IndexOf('#');
-        if (hash < 1 || hash == href.Length - 1 || href.IndexOf('?', StringComparison.Ordinal) >= 0)
+        if (href.IndexOf('?', StringComparison.Ordinal) >= 0)
         {
-            throw UnsupportedStructure("Every supported chapter link must identify an XHTML fragment.");
+            throw UnsupportedStructure("A table-of-contents link contains a query string.");
+        }
+
+        var hash = href.IndexOf('#');
+        if (hash < 0)
+        {
+            return (NormalizeArchivePath(referringPath, href), null);
+        }
+
+        if (hash < 1 || hash == href.Length - 1)
+        {
+            throw UnsupportedStructure("Every supported chapter link must identify an XHTML document or fragment.");
         }
 
         var path = NormalizeArchivePath(referringPath, href[..hash]);
@@ -907,7 +1152,9 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
         XElement Target,
         XElement Boundary,
         int? DeclaredNumber,
-        bool IsWholeDocumentTarget);
+        bool IsWholeDocumentTarget,
+        BookItemKind Kind,
+        string Label);
     private sealed record NcxDiscovery(IReadOnlyList<ParsedChapter> Chapters, string? InferredLanguage);
 
     private enum NavigationKind
@@ -919,8 +1166,11 @@ public sealed partial class EpubChapterParser(IOptions<EpubParserOptions> option
     [GeneratedRegex(@"^0*([1-9][0-9]*)$", RegexOptions.CultureInvariant)]
     private static partial Regex NumericLabel();
 
-    [GeneratedRegex(@"^Chapter\s+0*([1-9][0-9]*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex NcxChapterLabel();
+    [GeneratedRegex(@"^(?:Chapter|Cap[ií]tulo|Kapitel)\s+0*([1-9][0-9]*)(?:\s*[.:\-–—]\s*\S.*|\s+\S.*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ChapterWordLabel();
+
+    [GeneratedRegex(@"^(?:Chapter|Cap[ií]tulo|Kapitel)\s+0*([1-9][0-9]*)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ChapterWordOnly();
 
     [GeneratedRegex(@"^0*([1-9][0-9]*)(?:\s*[.\-–—:]\s*|\s+)\S.*$", RegexOptions.CultureInvariant)]
     private static partial Regex NumberedNcxChapterTitle();

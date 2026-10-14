@@ -9,7 +9,8 @@ public sealed class BookTrackBuilderTests
     private readonly BookTrackBuilder _builder = new(new TtsTextNormalizer(), new NumberToWordsConverter());
 
     private static ParsedEpubBook Book(params int[] numbers) =>
-        new("Book", "en", numbers.Select(number => new ParsedChapter(number, [$"Text of chapter {number}.", "Second  paragraph."])).ToList());
+        new("Book", "en", numbers.Select((number, index) =>
+            new ParsedChapter(number, [$"Text of chapter {number}.", "Second  paragraph."], Order: index + 1)).ToList());
 
     [Theory]
     [InlineData("en", "Chapter Twenty-four.")]
@@ -58,7 +59,7 @@ public sealed class BookTrackBuilderTests
 
         Assert.Equal("Read by me.\nWelcome – friend...", tracks[0].Text);
         Assert.Equal("The end.", tracks[^1].Text);
-        Assert.Null(tracks[0].ChapterNumber);
+        Assert.Null(tracks[0].ItemOrder);
     }
 
     [Fact]
@@ -70,12 +71,56 @@ public sealed class BookTrackBuilderTests
     }
 
     [Fact]
+    public void SectionsAndPartsUseTheirOwnHeadingsAndNames()
+    {
+        var book = new ParsedEpubBook("Book", "en",
+        [
+            new ParsedChapter(1, ["Opening words."], BookItemKind.Section, "Introduction", 1),
+            new ParsedChapter(1, ["Body."], Order: 2),
+            new ParsedChapter(2, ["Closing words."], BookItemKind.Section, "What Now?", 3)
+        ]);
+
+        var tracks = _builder.ItemTracks(book, "en");
+
+        Assert.Equal(["introduction.txt", "chapter-001.txt", "what-now.txt"], tracks.Select(track => track.DisplayName));
+        Assert.Equal("Introduction.\n\nOpening words.\n", tracks[0].Text);
+        Assert.Equal("What Now?\n\nClosing words.\n", tracks[2].Text);
+        Assert.Equal([BookItemKind.Section, BookItemKind.Chapter, BookItemKind.Section], tracks.Select(track => track.Kind!.Value));
+    }
+
+    [Theory]
+    [InlineData("en")]
+    [InlineData("pt")]
+    [InlineData(null)]
+    public void PartsHaveNoSpokenHeading(string? language)
+    {
+        var part = new ParsedChapter(2, ["Mid-scene sentence."], BookItemKind.Part, null, 2);
+
+        Assert.Equal("Mid-scene sentence.\n", _builder.ChapterText(part, language));
+        Assert.Equal("part-002.txt", _builder.ItemTracks(new ParsedEpubBook("B", "", [part], BookStructure.Parts), language)[0].DisplayName);
+    }
+
+    [Fact]
+    public void ExclusionIsKeyedByBookOrderNotChapterNumber()
+    {
+        var book = new ParsedEpubBook("Book", "en",
+        [
+            new ParsedChapter(1, ["Intro words."], BookItemKind.Section, "Introduction", 1),
+            new ParsedChapter(1, ["Chapter words."], Order: 2)
+        ]);
+
+        var tracks = _builder.Build(book, new BookSelection("", "", new HashSet<int> { 1 }), "en");
+
+        Assert.Equal(["chapter-001.txt"], tracks.Select(track => track.DisplayName));
+    }
+
+    [Fact]
     public void OrderAndDisplayNamesSkipExcludedChapters()
     {
-        var tracks = _builder.Build(Book(3, 1, 2), new BookSelection("Hello.", "Bye.", new HashSet<int> { 2 }), "en");
+        var tracks = _builder.Build(Book(1, 2, 3), new BookSelection("Hello.", "Bye.", new HashSet<int> { 2 }), "en");
 
         Assert.Equal(["intro.txt", "chapter-001.txt", "chapter-003.txt", "outro.txt"], tracks.Select(track => track.DisplayName));
-        Assert.Equal([null, 1, 3, null], tracks.Select(track => track.ChapterNumber));
+        Assert.Equal([null, 1, 3, null], tracks.Select(track => track.ItemOrder));
         Assert.Equal(["Batch 001.mp3", "Batch 002.mp3", "Batch 003.mp3", "Batch 004.mp3"],
             tracks.Select((_, index) => BatchRules.OutputName("Batch", index + 1)));
     }
@@ -85,15 +130,15 @@ public sealed class BookTrackBuilderTests
     {
         var book = Book(1, 2, 3);
         var selection = new BookSelection("Hi.", "", new HashSet<int> { 1 });
-        var chapterTracks = book.Chapters.Select(chapter => _builder.ChapterTrack(chapter, "sv")).ToList();
+        var itemTracks = _builder.ItemTracks(book, "sv");
 
-        Assert.Equal(_builder.Build(book, selection, "sv"), _builder.Build(chapterTracks, selection));
+        Assert.Equal(_builder.Build(book, selection, "sv"), _builder.Build(itemTracks, selection));
     }
 
     [Fact]
     public void CharactersAndBytesMatchTheUploadedText()
     {
-        var track = _builder.ChapterTrack(new ParsedChapter(1, ["Olá, ação!"]), "pt");
+        var track = _builder.ItemTracks(new ParsedEpubBook("B", "pt", [new ParsedChapter(1, ["Olá, ação!"], Order: 1)]), "pt")[0];
         var bytes = Encoding.UTF8.GetBytes(track.Text);
 
         Assert.Equal(bytes.Length, track.Bytes);
@@ -105,7 +150,7 @@ public sealed class BookTrackBuilderTests
     [Fact]
     public void ChapterWithNothingNarratableBecomesAnEmptyTrack()
     {
-        var track = _builder.ChapterTrack(new ParsedChapter(4, ["***"]), "en");
+        var track = _builder.ItemTracks(new ParsedEpubBook("B", "en", [new ParsedChapter(4, ["***"], Order: 1)]), "en")[0];
 
         Assert.Equal(0, track.Characters);
         Assert.Equal("chapter-004.txt: file is empty", EpubBookRules.TrackError(track));

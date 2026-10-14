@@ -17,9 +17,10 @@ public sealed class EpubImportDraft
     public HashSet<int> Excluded { get; } = [];
     public HashSet<int> Expanded { get; } = [];
 
-    /// <summary>Replaces the current import with a successfully parsed book; the chosen voice is kept.</summary>
+    /// <summary>Replaces the current import with a parsed (or accepted fallback) book; the chosen voice is kept.</summary>
     public void Load(EpubImportResult result, string sourceLabel)
     {
+        ArgumentNullException.ThrowIfNull(result.Book);
         Book = result.Book;
         Repaired = result.Repaired;
         SourceLabel = sourceLabel;
@@ -28,6 +29,8 @@ public sealed class EpubImportDraft
         Outro = "";
         Excluded.Clear();
         Expanded.Clear();
+        // Named sections are opt-in; chapters and parts start included.
+        Excluded.UnionWith(result.Book!.Chapters.Where(item => item.Kind == BookItemKind.Section).Select(item => item.Order));
     }
 
     public void Clear()

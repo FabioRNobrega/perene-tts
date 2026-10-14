@@ -1152,6 +1152,18 @@ code {
 .book-summary strong {
     color:var(--text-strong)
 }
+.fallback-offer {
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px 16px;
+    margin:0 0 8px
+}
+.fallback-offer p {
+    flex:1 1 280px;
+    margin:0
+}
 .language-warning {
     color:var(--brand-gold)
 }

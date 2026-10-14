@@ -13,7 +13,7 @@ builder.Services.AddHttpClient<TtsClient>(client =>
 builder.Services.AddScoped<StudioSession>();
 builder.Services.AddOptions<EpubParserOptions>()
     .Bind(builder.Configuration.GetSection(EpubParserOptions.SectionName))
-    .Validate(options => options.LimitsArePositive(), "All EPUB parser limits must be positive.")
+    .Validate(options => options.LimitsArePositive(), "All EPUB parser limits must be positive, and FallbackPartCharacters at most 200,000.")
     .ValidateOnStart();
 builder.Services.AddSingleton<IEpubArchiveRepairer, EpubArchiveRepairer>();
 builder.Services.AddSingleton<IEpubChapterParser, EpubChapterParser>();
