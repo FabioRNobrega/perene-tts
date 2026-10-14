@@ -3,7 +3,7 @@ COMPOSE_PROJECT ?= perene-tts
 ARGS ?=
 DOCKER_COMPOSE = $(COMPOSE) -p $(COMPOSE_PROJECT)
 
-.PHONY: help docker-build docker-run docker-run-bg docker-down docker-reset docker-logs docker-ps docker-shell docker-exec dotnet docker-test docker-check get-url build up down logs ps test check mac-setup mac-worker mac-up mac-down desktop-mac desktop-run desktop-smoke desktop-icon
+.PHONY: help docker-build docker-run docker-run-bg docker-down docker-reset docker-logs docker-ps docker-shell docker-exec dotnet docker-test docker-check get-url build up down logs ps test check mac-setup mac-worker mac-up mac-down desktop-mac desktop-dmg desktop-run desktop-smoke desktop-icon
 help:
 	@printf '%s\n' \
 		'make docker-build       Build frontend and TTS images' \
@@ -21,9 +21,10 @@ help:
 		'make get-url            Show the published browser and worker URLs' \
 		'Apple Metal: mac-setup, mac-worker, mac-up, mac-down' \
 		'make desktop-mac        Build dist/Perene TTS.app and its zip in Docker (nothing installed on the Mac)' \
+		'make desktop-dmg        Pack the built app into dist/Perene-TTS-<version>-macos-arm64.dmg (on the Mac)' \
 		'make desktop-run        Open the built app (on the Mac)' \
 		'make desktop-smoke      Offline check of the built app engine on the Mac (DEVICE=cpu|mps|auto)' \
-		'make desktop-icon       Re-render packaging/macos/AppIcon-1024.png from the SVG (Docker)'
+		'make desktop-icon       Re-render the app icon and disk image background PNGs from their SVGs (Docker)'
 
 docker-build:
 	$(DOCKER_COMPOSE) build web tts
@@ -85,6 +86,8 @@ DEVICE ?= auto
 desktop-mac:
 	docker build --tag $(DESKTOP_BUILDER) packaging/macos
 	docker run --rm -v "$(CURDIR):/src" -v $(DESKTOP_BUILDER)-stage:/stage -w /src $(DESKTOP_BUILDER) bash packaging/macos/build.sh $(STEPS)
+desktop-dmg:
+	bash packaging/macos/dmg.sh
 desktop-run:
 	open "$(DESKTOP_APP)"
 desktop-smoke:
@@ -92,6 +95,13 @@ desktop-smoke:
 	@[ -x /usr/bin/sandbox-exec ] || [ "$(SMOKE_NO_SANDBOX)" = 1 ] || { echo 'sandbox-exec is unavailable: turn Wi-Fi off and rerun with SMOKE_NO_SANDBOX=1.' >&2; exit 1; }
 	codesign --verify --deep --strict --verbose=1 "$(DESKTOP_APP)"
 	SMOKE_DEVICE=$(DEVICE) SMOKE_NO_SANDBOX=$(SMOKE_NO_SANDBOX) "$(DESKTOP_APP)/Contents/Resources/python/bin/python3.11" -I packaging/macos/smoke.py "$(DESKTOP_APP)"
+	@# Running must not write into the signed bundle (for example .pyc files from helper processes).
+	codesign --verify --deep --strict --verbose=1 "$(DESKTOP_APP)"
 desktop-icon:
-	docker run --rm -v "$(CURDIR)/packaging/macos:/work" -w /work docker.io/library/alpine:3.20 \
-		sh -c 'apk add --no-cache rsvg-convert >/dev/null && rsvg-convert -w 1024 -h 1024 perene-tts.svg -o AppIcon-1024.png'
+	docker run --rm -v "$(CURDIR)/packaging/macos:/work" -w /work \
+		-v "$(CURDIR)/WebApp/wwwroot/vendor/font-4.ttf:/usr/share/fonts/perene/ZillaSlab-SemiBold.ttf:ro" docker.io/library/alpine:3.20 \
+		sh -c 'apk add --no-cache rsvg-convert fontconfig >/dev/null \
+			&& { fc-list | grep -q "Zilla Slab SemiBold" || { echo "Zilla Slab SemiBold not found" >&2; exit 1; }; } \
+			&& rsvg-convert -w 1024 -h 1024 perene-tts.svg -o AppIcon-1024.png \
+			&& rsvg-convert -w 640 -h 400 dmg-background.svg -o dmg-background.png \
+			&& rsvg-convert -w 1280 -h 800 dmg-background.svg -o dmg-background@2x.png'

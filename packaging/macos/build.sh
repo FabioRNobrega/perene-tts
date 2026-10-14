@@ -21,12 +21,16 @@ LLVM_BIN="$(llvm-config --bindir 2>/dev/null || true)"
 PYTHON_RELEASE=20261009
 PYTHON_ARCHIVE="cpython-3.11.17+$PYTHON_RELEASE-aarch64-apple-darwin-install_only_stripped.tar.gz"
 PYTHON_SHA256=f58d38af4680fbf9f89c329e732b7cca1bd06ff7a93884798b27d541bee138f6
+# The same CPython built for this Linux build host compiles the bundled standard library's bytecode (see bundle).
+HOST_PYTHON_SHA256_X86_64=89db7607ebadb77a64709d159b86555d995368ec385a2ab33b00477790c543b0
+HOST_PYTHON_SHA256_AARCH64=7e7e24eee3467dd666aff379c34c4ef3e6bc7142aec7d5ba783765df7da999a6
 FFMPEG_VERSION=7.1.1
 FFMPEG_SHA256=733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1
 LAME_VERSION=3.100
 LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
-# resemble-perth imports pkg_resources, which venvs and the worker image get from setuptools. The standalone Python
-# carries setuptools only as its ensurepip wheel, so that same wheel is installed with the worker packages.
+# resemble-perth imports pkg_resources, which venvs and the worker image get from setuptools. The standalone Python's
+# own site-packages has setuptools 84.0.0, which no longer includes pkg_resources; its ensurepip wheel (79.0.1, the one
+# python3.11 -m venv installs for make mac-worker) still does, so that wheel replaces it in the app (see bundle).
 SETUPTOOLS_WHEEL=setuptools-79.0.1-py3-none-any.whl
 # Chatterbox's tokenizer starts spacy_pkuseg for every language, and it downloads this model unless PKUSEG_HOME already
 # holds the zip and its unpacked folder. URL and SHA-256 are spacy_pkuseg 1.0.1's own (spacy_pkuseg/config.py).
@@ -58,16 +62,29 @@ preflight() {
     mkdir -p "$BUILD/downloads" "$BUILD/licenses" "$DIST" "$STAGE"
 }
 
+host_python_archive() {  # the Linux build of the same CPython, for this build host's architecture
+    printf 'cpython-3.11.17+%s-%s-unknown-linux-gnu-install_only_stripped.tar.gz' "$PYTHON_RELEASE" "$(uname -m)"
+}
+
 python_runtime() {
-    step "Standalone Python 3.11 for macOS arm64"
+    step "Standalone Python 3.11 for macOS arm64 (and for this build host)"
     download "https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_RELEASE/${PYTHON_ARCHIVE//+/%2B}" \
         "$PYTHON_SHA256" "$BUILD/downloads/$PYTHON_ARCHIVE"
+    local archive sha
+    archive="$(host_python_archive)"
+    case "$(uname -m)" in
+        x86_64) sha="$HOST_PYTHON_SHA256_X86_64" ;;
+        aarch64) sha="$HOST_PYTHON_SHA256_AARCH64" ;;
+        *) fail "Unsupported build host $(uname -m)" ;;
+    esac
+    download "https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_RELEASE/${archive//+/%2B}" \
+        "$sha" "$BUILD/downloads/$archive"
 }
 
 packages() {
     step "Worker packages (macOS arm64 wheels from PyPI)"
     local site="$BUILD/site-packages" wheels="$BUILD/wheels" stamp
-    stamp="$({ cat "$SERVICE/requirements.lock.txt" "$SERVICE/requirements.txt"; echo "$SETUPTOOLS_WHEEL"; } | sha256sum | cut -d' ' -f1)"
+    stamp="$({ cat "$SERVICE/requirements.lock.txt" "$SERVICE/requirements.txt"; echo "$SETUPTOOLS_WHEEL no-compile"; } | sha256sum | cut -d' ' -f1)"
     if [[ -f "$site/.stamp" && "$(cat "$site/.stamp")" == "$stamp" ]]; then return; fi
     rm -rf "${site:?}" "${wheels:?}"
     mkdir -p "$wheels"
@@ -81,7 +98,8 @@ packages() {
       grep -vE '^\s*(#|$)|^chatterbox-tts @' "$SERVICE/requirements.txt"
       ls "$wheels"/chatterbox_tts-*.whl "$wheels/$SETUPTOOLS_WHEEL"; } > "$BUILD/requirements-macos.txt"
     # Same pinned set as scripts/mac-worker.sh setup; PyPI's macOS arm64 torch wheel includes MPS.
-    pip install --quiet --no-deps --target "$site" --find-links "$wheels" "${MAC_WHEELS[@]}" -r "$BUILD/requirements-macos.txt"
+    # --no-compile: this builder's Python is not 3.11, so its .pyc files would be dead weight in the app.
+    pip install --quiet --no-deps --no-compile --target "$site" --find-links "$wheels" "${MAC_WHEELS[@]}" -r "$BUILD/requirements-macos.txt"
     echo "$stamp" > "$site/.stamp"
 }
 
@@ -235,10 +253,24 @@ bundle() {
     cp "$BUILD/ffmpeg/bin/ffmpeg" "$APP/Contents/MacOS/ffmpeg"
     tar --no-same-owner -xzf "$BUILD/downloads/$PYTHON_ARCHIVE" -C "$resources"   # creates python/
     site="$resources/python/lib/python3.11/site-packages"
+    # The worker packages bring setuptools 79.0.1; the archive's setuptools 84.0.0 is removed, not mixed into it.
+    rm -rf "$site"/setuptools "$site"/setuptools-*.dist-info "$site"/_distutils_hack "$site"/distutils-precedence.pth
     cp -a "$BUILD/site-packages/." "$site/"
     rm -f "$site/.stamp"
     # The worker itself; runs as `python3.11 -I -m app.desktop`.
     tar -C "$SERVICE" --exclude=__pycache__ -cf - app | tar --no-same-owner -C "$site" -xf -
+    # Nothing may write into the signed bundle. The worker keeps its bytecode under -X pycache_prefix, but the helper
+    # processes multiprocessing starts (resource_tracker) do not inherit that option, and wrote .pyc files next to the
+    # standard library they import. So the standard library ships compiled by the same CPython 3.11.17 built for this
+    # host; unchecked-hash .pyc files are used as they are, whatever file times survive a zip. Every process also runs
+    # setuptools' distutils-precedence.pth, which imports _distutils_hack from site-packages, so that module is compiled
+    # the same way.
+    rm -rf /tmp/host-python
+    mkdir -p /tmp/host-python
+    tar --no-same-owner -xzf "$BUILD/downloads/$(host_python_archive)" -C /tmp/host-python --strip-components=1
+    /tmp/host-python/bin/python3.11 -I -m compileall -q -f -j 0 --invalidation-mode unchecked-hash \
+        -x '/(site-packages|test|tests|idle_test)/' "$resources/python/lib/python3.11" >/dev/null
+    /tmp/host-python/bin/python3.11 -I -m compileall -q -f --invalidation-mode unchecked-hash "$site/_distutils_hack" >/dev/null
     cp -a "$BUILD/model" "$resources/model"
     # The worker gets PKUSEG_HOME=Contents/Resources/pkuseg (WorkerProcess.Settings), so nothing is downloaded at runtime.
     mkdir -p "$resources/pkuseg"
@@ -355,4 +387,4 @@ package
 publish
 sizes
 printf '\nDone: dist/Perene TTS.app and dist/Perene-TTS-macos-arm64.zip\n'
-printf 'On the Mac: make desktop-run (or double-click the app), and optionally make desktop-smoke.\n'
+printf 'On the Mac: make desktop-run (or double-click the app), optionally make desktop-smoke, and make desktop-dmg.\n'

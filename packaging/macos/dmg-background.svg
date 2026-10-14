@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400">
+  <!-- Disk image window (packaging/macos/dmg.sh): flat Perene paper, the studio's light-mode page background
+       (bg-app token), so Finder's dark item labels stay readable. -->
+  <rect width="640" height="400" fill="#EFE3C6"/>
+  <!-- The studio's sidebar logo in light mode, centred above the icons (whose drawn tops are at about y 183):
+       Bootstrap Icons 1.13.1 "soundwave" (MIT) in the primary gold, then "PereneTTS" in Zilla Slab SemiBold
+       (WebApp/wwwroot/vendor/font-4.ttf, which make desktop-icon installs for rsvg-convert) in the strong text
+       colour. 44 px text (ink 208 px wide with kerning, cap height 28.6 px), a 30 px icon and an 18 px gap make a
+       256 px row, centred on x 320 with its cap height centred on y 96. -->
+  <g transform="translate(187 76) scale(2.5)">
+    <path fill="#B98A2E" fill-rule="evenodd" d="M8.5 2a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-1 0v-11a.5.5 0 0 1 .5-.5m-2 2a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5m4 0a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5m-6 1.5A.5.5 0 0 1 5 6v4a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m8 0a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m-10 1A.5.5 0 0 1 3 7v2a.5.5 0 0 1-1 0V7a.5.5 0 0 1 .5-.5m12 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0V7a.5.5 0 0 1 .5-.5"/>
+  </g>
+  <text x="238.2" y="110.3" fill="#2B2418" font-family="Zilla Slab SemiBold" font-size="44">PereneTTS</text>
+  <!-- Bootstrap Icons 1.13.1 "arrow-right" (MIT), scaled from its 16 px box to about 80 px, in the light-mode gold
+       (brand-gold token), centred between the app (x 160) and Applications (x 480). Finder draws an icon's visual
+       centre about 44 pt below its position (y 190, measured on macOS 26), so the arrow sits at y 234. -->
+  <g transform="translate(320 234) scale(5.5) translate(-8 -8)">
+    <path fill="#755618" fill-rule="evenodd" d="M1 8a.5.5 0 0 1 .5-.5h11.793l-3.147-3.146a.5.5 0 0 1 .708-.708l4 4a.5.5 0 0 1 0 .708l-4 4a.5.5 0 0 1-.708-.708L13.293 8.5H1.5A.5.5 0 0 1 1 8"/>
+  </g>
+</svg>
