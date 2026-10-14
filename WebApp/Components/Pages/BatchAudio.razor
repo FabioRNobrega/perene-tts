@@ -4,10 +4,11 @@
 <h1 class="visually-hidden">Batch audio</h1>
 <section class="tab-shell">
     <div class="tab-list" role="tablist" aria-label="Batch audio">
-        <button id="tab-new" class="tab @(showBatches ? null : "active")" type="button" role="tab" aria-selected="@(showBatches ? "false" : "true")" aria-controls="panel-new" @onclick="() => showBatches = false"><i class="bi bi-plus-square" aria-hidden="true"></i>New batch</button>
-        <button id="tab-batches" class="tab @(showBatches ? "active" : null)" type="button" role="tab" aria-selected="@(showBatches ? "true" : "false")" aria-controls="panel-batches" @onclick="ShowBatches"><i class="bi bi-list-task" aria-hidden="true"></i>Batches<span class="tab-count">@Studio.Batches.Count</span></button>
+        <button id="tab-new" class="tab @(tab == Tab.New ? "active" : null)" type="button" role="tab" aria-selected="@(tab == Tab.New ? "true" : "false")" aria-controls="panel-new" @onclick="() => tab = Tab.New"><i class="bi bi-plus-square" aria-hidden="true"></i>New batch</button>
+        <button id="tab-epub" class="tab @(tab == Tab.Epub ? "active" : null)" type="button" role="tab" aria-selected="@(tab == Tab.Epub ? "true" : "false")" aria-controls="panel-epub" @onclick="() => tab = Tab.Epub"><i class="bi bi-book" aria-hidden="true"></i>From EPUB</button>
+        <button id="tab-batches" class="tab @(tab == Tab.Batches ? "active" : null)" type="button" role="tab" aria-selected="@(tab == Tab.Batches ? "true" : "false")" aria-controls="panel-batches" @onclick="ShowBatches"><i class="bi bi-list-task" aria-hidden="true"></i>Batches<span class="tab-count">@Studio.Batches.Count</span></button>
     </div>
-@if (!showBatches)
+@if (tab == Tab.New)
 {
 <div id="panel-new" class="tab-panel" role="tabpanel" aria-labelledby="tab-new">
 <div class="workspace">
@@ -86,6 +87,12 @@
 </div>
 </div>
 }
+else if (tab == Tab.Epub)
+{
+<div id="panel-epub" class="tab-panel" role="tabpanel" aria-labelledby="tab-epub">
+    <EpubBatchPanel OnCreated="BatchCreated" />
+</div>
+}
 else
 {
 <div id="panel-batches" class="tab-panel" role="tabpanel" aria-labelledby="tab-batches">
@@ -96,7 +103,7 @@ else
     }
     else if (Studio.Batches.Count == 0)
     {
-        <div class="empty-state card"><i class="bi bi-files" aria-hidden="true"></i><h2>No batches yet</h2><p>Choose a folder of .txt files to convert a whole book.</p><button class="button secondary" @onclick="() => showBatches = false"><i class="bi bi-plus-square" aria-hidden="true"></i> New batch</button></div>
+        <div class="empty-state card"><i class="bi bi-files" aria-hidden="true"></i><h2>No batches yet</h2><p>Choose a folder of .txt files or import an EPUB to convert a whole book.</p><button class="button secondary" @onclick="() => tab = Tab.New"><i class="bi bi-plus-square" aria-hidden="true"></i> New batch</button></div>
     }
     else
     {
@@ -128,6 +135,7 @@ else
     private const int MaxSelection = 1000;
     [SupplyParameterFromQuery(Name = "batch")] public string? BatchQuery { get; set; }
     [SupplyParameterFromQuery(Name = "tab")] public string? TabQuery { get; set; }
+    private enum Tab { New, Epub, Batches }
     private sealed record SelectedFile(IBrowserFile File, string Name, long Size, int? Characters, string? Error);
     private readonly HashSet<string> expanded = new(StringComparer.Ordinal);
     private readonly Dictionary<string, BatchDetail> details = new(StringComparer.Ordinal);
@@ -135,7 +143,8 @@ else
     private List<SelectedFile> files = [];
     private string name = "", voiceId = "";
     private int skipped, pageNumber = 1, pageSize = 10;
-    private bool checking, starting, acting, confirmDelete, showBatches;
+    private bool checking, starting, acting, confirmDelete;
+    private Tab tab;
     private string? selectionError;
     private BatchSummary? confirm;
 
@@ -154,13 +163,13 @@ else
         Studio.Changed += StudioChanged;
     }
 
-    // ?tab=batches or ?batch=<id> (sidebar status, My creations "Open batch") opens the Batches tab.
+    // ?tab=epub opens From EPUB; ?tab=batches or ?batch=<id> (sidebar status, My creations "Open batch") opens Batches.
     protected override Task OnParametersSetAsync()
     {
-        showBatches = string.Equals(TabQuery, "batches", StringComparison.OrdinalIgnoreCase);
+        tab = TabQuery?.ToLowerInvariant() switch { "epub" => Tab.Epub, "batches" => Tab.Batches, _ => Tab.New };
         if (Guid.TryParse(BatchQuery, out var id))
         {
-            showBatches = true;
+            tab = Tab.Batches;
             expanded.Add(id.ToString("D"));
         }
         return RefreshDetails();
@@ -178,7 +187,7 @@ else
 
     private Task ShowBatches()
     {
-        showBatches = true;
+        tab = Tab.Batches;
         return RefreshDetails();
     }
 
@@ -257,10 +266,7 @@ else
                 files = [];
                 skipped = 0;
                 name = "";
-                pageNumber = 1;
-                showBatches = true;
-                expanded.Add(created.BatchId);
-                await RefreshDetails();
+                await BatchCreated(created);
             }
         }
         finally
@@ -268,6 +274,15 @@ else
             foreach (var upload in uploads) await upload.Content.DisposeAsync();
             starting = false;
         }
+    }
+
+    // A new batch from either tab opens Batches with that batch expanded.
+    private async Task BatchCreated(BatchSummary created)
+    {
+        pageNumber = 1;
+        tab = Tab.Batches;
+        expanded.Add(created.BatchId);
+        await RefreshDetails();
     }
 
     private async Task Toggle(string id)

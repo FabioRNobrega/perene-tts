@@ -1,6 +1,6 @@
 # PereneTTS
 
-A small local voice studio: upload an MP3 or WAV recording to preserve a named voice, hear a predefined sample, then generate new speech in English, Portuguese, or Swedish. The frontend is a .NET 10 Blazor Interactive Server application; a separate Python/FastAPI worker runs Chatterbox Multilingual V3. Generated audio can be played and downloaded as MP3. A **Batch audio** page converts a folder of book `.txt` files into one MP3 per file with pause, resume, stop, and retry. The PereneArchive-style sidebar separates **Create a voice**, **Generate audio**, **Batch audio**, and **My creations**. Montserrat, Zilla Slab, and Bootstrap Icons are bundled locally; forest-green dark mode and cream light mode follow the Perene design guide.
+A small local voice studio: upload an MP3 or WAV recording to preserve a named voice, hear a predefined sample, then generate new speech in English, Portuguese, or Swedish. The frontend is a .NET 10 Blazor Interactive Server application; a separate Python/FastAPI worker runs Chatterbox Multilingual V3. Generated audio can be played and downloaded as MP3. A **Batch audio** page converts a folder of book `.txt` files, or one imported EPUB book, into one MP3 per file or chapter with pause, resume, stop, and retry. The PereneArchive-style sidebar separates **Create a voice**, **Generate audio**, **Batch audio**, and **My creations**. Montserrat, Zilla Slab, and Bootstrap Icons are bundled locally; forest-green dark mode and cream light mode follow the Perene design guide.
 
 ## Start with Docker
 
@@ -38,7 +38,7 @@ Voices are local and shared across browsers using this instance. Uploading the s
 
 ## Batch audio
 
-Use **Batch audio** to turn a book export (for example the book-notes-ia `EbookParseService` output folder) into an audiobook-style set of MP3s:
+Use **Batch audio** to turn a folder of `.txt` files (for example the book-notes-ia `EbookParseService` output folder) into an audiobook-style set of MP3s. To start from an `.epub` instead, see [Import an EPUB book](#import-an-epub-book).
 
 1. Enter a batch name (1–80 characters, no `/`, `\`, or control characters) and choose a saved voice. Every file is read in that voice's language.
 2. Click **Choose folder** (or multi-select files). Only `.txt` files are kept and other files are counted as skipped. A new selection replaces the list.
@@ -57,6 +57,24 @@ Limits: 1–200 files, each valid UTF-8 (a leading BOM is ignored), 1–200,000 
 Tracks are encoded at 192 kbps MP3, the same quality as single-text speech; resumed tracks use the same per-chunk seeds and silences as an uninterrupted run. Plan disk space for about 1.4 MB per minute of audio (a ~436,000-character book is roughly 8 hours, ~0.7 GB) plus one track's WAV checkpoints (~2.9 MB per minute).
 
 Set `TTS_BATCH_ENABLED=false` (in `.env` for Docker, or the environment for `make mac-worker`) to turn the runner off: new batches are refused with 503, the page explains why, and existing batches stay listed and downloadable. Voice tests and generation are unaffected.
+
+### Import an EPUB book
+
+The **From EPUB** tab (`/batch-audio?tab=epub`) builds one batch from a book, with no separate parsing step:
+
+1. Click **Choose .epub** and pick one DRM-free EPUB 2 or 3 (up to 100 MiB). “Reading EPUB…” shows while the web host streams it to a private temporary file, repairs its packaging if needed, and parses it. The summary shows the title, language, chapter count, and characters, and the batch name is prefilled from the title.
+2. Choose a saved voice. If the book's language differs from the voice's, a warning names both; chapters are always read, and their headings spoken, in the voice's language.
+3. Optionally type an **Intro** and an **Outro** (up to 5,000 characters each). They are read exactly as typed, before the first chapter and after the last; leave a field empty to skip it.
+4. Untick chapters you do not want (**Include all** / **Include none** help) and use the eye button to preview a chapter's exact narrated text. Each chapter starts with a spoken heading such as “Chapter Twenty-four.”, “Capítulo Vinte e quatro.”, or “Kapitel Tjugofyra.”.
+5. Click **Start book batch**. The batch uploads `intro.txt`, `chapter-NNN.txt` (the book's chapter number), and `outro.txt` through the normal batch pipeline, and the Batches tab opens with it expanded. Output names stay positional: with an intro, chapter 1 becomes `<Batch name> 002.mp3`.
+
+Rules and limits:
+
+- **Strict chapters.** Chapters are found only from EPUB 3 navigation entries marked `epub:type="chapter"` or numbered and confirmed by a matching heading, or from EPUB 2 NCX labels such as `Chapter 7`, `7`, or `7. Title` with a matching heading. A book without explicit chapter structure is rejected with a reason rather than guessed. Encrypted (DRM) books are rejected.
+- **Automatic packaging repair.** A book whose `mimetype` marker is missing, not first, or wrong is rebuilt in a second temporary file (marker first and stored, every other entry in its original order) and verified before parsing. You then see “This EPUB's packaging was repaired automatically.” Archives with unsafe, duplicate, or symbolic-link entries, or over the archive limits, are rejected instead. Content, navigation, and corrupt data are never “fixed”.
+- **Narration text.** Paragraphs drop standalone `***` scene markers and normalize repeated periods and whitespace. For Portuguese and Swedish voices, dialogue dashes (`– Jaha. Vad gör vi nu då? sa Irene till Tommy.`) are turned into natural pauses; English keeps them.
+- **Same batch limits.** Each included chapter must fit one track (200,000 characters, 1 MiB); a longer chapter is marked invalid and blocks **Start** until you untick it. The batch keeps the 200-track and 10 MiB totals. A book's parsed text is capped at 20,000,000 characters. Archive and size limits are configurable under the web host's `EpubParser` settings (for example `EpubParser__MaxSourceFileBytes`).
+- **Privacy.** The EPUB is never stored: both temporary files are deleted after success, failure, or cancellation, and its file name is a display label only. Web logs record only the error category, whether a repair ran, and chapter/character counts, never the title or text. The import (book, name, voice, intro, outro, selections, open previews) is kept while you switch tabs or pages in the same browser session; **Clear** discards it and a browser reload starts empty.
 
 ## Apple Silicon: use Metal
 
@@ -135,6 +153,8 @@ flowchart LR
 The service adapts `book-notes-ia/services/ChatterboxTtsService`'s engine, UUID voice store, reference/output validation, and chunking. It retains source revision `5de7a54aa4e5e2baadb0182dde554908b48b85c2` and model revision `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18`. Saved conditioning is loaded with checksums, model/schema compatibility checks, and the upstream restricted `weights_only=True` loader. No conditioning-file upload is accepted. See [Chatterbox](https://github.com/resemble-ai/chatterbox) for upstream MIT licensing and model information. UI cards, responsive layout, and dark/paper-light appearance are inspired by `perene-archive`; neither reference project is modified.
 
 The .NET host uses typed HttpClient and Interactive Server rendering per [Microsoft Learn render modes](https://learn.microsoft.com/aspnet/core/blazor/components/render-modes?view=aspnetcore-10.0). Upload streaming uses explicit bounds following [Microsoft Learn file uploads](https://learn.microsoft.com/aspnet/core/blazor/file-uploads?view=aspnetcore-10.0).
+
+EPUB import runs in the web host, not the worker: `EpubImportService` streams the upload to a `DeleteOnClose` temporary file, then in one background task `EpubArchiveRepairer` (a port of book-notes-ia's `repair-ebook.sh`) checks the packaging and `EpubChapterParser` (a stream-based port of book-notes-ia's strict `EbookParseService` parser) discovers chapters. `TtsTextNormalizer`, `NumberToWordsConverter`, and `BookTrackBuilder` produce the narrated `.txt` parts, which go through the unchanged `POST /batches`. ZIP limits and XML settings follow [Microsoft Learn ZIP best practices](https://learn.microsoft.com/dotnet/standard/io/zip-tar-best-practices) and [CA3075](https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca3075).
 
 Worker routes: `GET /health`, `GET /voices`, `GET /creations`, `POST /voices` (multipart name/language/audio), `POST /speech` (voice_id/text), `GET /jobs/{uuid}`, `GET /audio/{uuid}`, and the batch routes `GET|POST /batches`, `GET|DELETE /batches/{uuid}`, `POST /batches/{uuid}/pause|resume|stop|retry`, `POST /batches/{uuid}/tracks/{n}/retry`, `GET /batches/{uuid}/tracks/{n}/audio`, `GET /batches/{uuid}/archive`. Audio is streamed through the web host at `/audio/{uuid}`, `/batches/{uuid}/tracks/{n}`, and `/batches/{uuid}/archive`; `?download=1` supplies the download disposition. The Docker worker API is published only on localhost; use http://localhost:5081/health or http://localhost:5081/docs. The worker root has no application screen. `0.0.0.0` in Uvicorn logs is a listening address, not the browser URL.
 

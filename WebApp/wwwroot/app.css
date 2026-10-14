@@ -1134,6 +1134,80 @@ code {
     color:var(--danger-text);
     white-space:normal!important
 }
+/* From EPUB: book summary, include toggles, and the per-chapter text preview. */
+.picker-row.single {
+    grid-template-columns:minmax(0,200px)
+}
+.book-summary {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    margin-top:12px;
+    padding:10px 12px;
+    border:1px solid var(--border);
+    border-radius:6px;
+    background:var(--bg-app)
+}
+.book-summary strong {
+    color:var(--text-strong)
+}
+.language-warning {
+    color:var(--brand-gold)
+}
+.include-actions {
+    display:flex;
+    gap:8px
+}
+.chapter-list {
+    max-height:min(70vh,640px)
+}
+.file-row.chapter-row {
+    grid-template-columns:24px 44px minmax(0,1fr) auto
+}
+.file-row.excluded .job-info,.file-row.excluded .track-number {
+    opacity:.6
+}
+.include-toggle {
+    display:flex;
+    align-items:center;
+    justify-content:center
+}
+.include-toggle input[type=checkbox] {
+    width:18px;
+    height:18px;
+    margin:0;
+    padding:0;
+    accent-color:var(--primary);
+    cursor:pointer
+}
+.include-toggle input[type=checkbox]:disabled {
+    cursor:not-allowed
+}
+.chapter-preview {
+    grid-column:1/-1;
+    max-height:22rem;
+    overflow-y:auto;
+    margin:4px 0 6px;
+    padding:12px 16px;
+    border:1px solid var(--border);
+    border-radius:6px;
+    background:var(--bg-surface);
+    color:var(--text-body);
+    font-size:.88rem;
+    line-height:1.65
+}
+.chapter-preview p {
+    max-width:68ch;
+    margin:0 0 .8em
+}
+.chapter-preview p:last-child {
+    margin-bottom:0
+}
+.chapter-preview:focus-visible {
+    outline:2px solid var(--brand-gold);
+    outline-offset:2px
+}
 .validation {
     margin:8px 0;
     padding:10px 14px 10px 30px;
@@ -1434,10 +1508,12 @@ code {
         grid-template-columns:minmax(0,1fr)
     }
     .tab-list {
-        padding:6px 8px 0
+        padding:6px 8px 0;
+        overflow-x:auto;
+        scrollbar-width:thin
     }
     .tab {
-        flex:1;
+        flex:1 0 auto;
         justify-content:center;
         padding:8px 10px
     }
@@ -1454,6 +1530,12 @@ code {
     .file-row .job-actions {
         grid-column:1/-1;
         justify-content:flex-end
+    }
+    .file-row.chapter-row {
+        grid-template-columns:24px 36px minmax(0,1fr)
+    }
+    .book-summary {
+        align-items:flex-start
     }
     .batch-details dl {
         grid-template-columns:minmax(0,1fr);

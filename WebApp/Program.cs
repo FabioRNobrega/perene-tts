@@ -1,5 +1,6 @@
 using PereneTts.Components;
 using PereneTts.Services;
+using PereneTts.Services.Epub;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
@@ -10,6 +11,17 @@ builder.Services.AddHttpClient<TtsClient>(client =>
     client.Timeout = TimeSpan.FromMinutes(3);
 });
 builder.Services.AddScoped<StudioSession>();
+builder.Services.AddOptions<EpubParserOptions>()
+    .Bind(builder.Configuration.GetSection(EpubParserOptions.SectionName))
+    .Validate(options => options.LimitsArePositive(), "All EPUB parser limits must be positive.")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IEpubArchiveRepairer, EpubArchiveRepairer>();
+builder.Services.AddSingleton<IEpubChapterParser, EpubChapterParser>();
+builder.Services.AddSingleton<ITtsTextNormalizer, TtsTextNormalizer>();
+builder.Services.AddSingleton<INumberToWordsConverter, NumberToWordsConverter>();
+builder.Services.AddSingleton<IBookTrackBuilder, BookTrackBuilder>();
+builder.Services.AddSingleton<IEpubImportService, EpubImportService>();
+builder.Services.AddScoped<EpubImportDraft>();
 var app = builder.Build();
 app.UseExceptionHandler("/error", createScopeForErrors: true);
 app.UseStaticFiles();

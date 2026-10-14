@@ -1,0 +1,260 @@
+@inherits StudioComponent
+@using System.Text
+@inject IEpubImportService Import
+@inject IBookTrackBuilder Builder
+@inject EpubImportDraft Draft
+<div class="workspace">
+    <section class="card" aria-labelledby="epub-title">
+        <div class="card-heading"><i class="bi bi-book" aria-hidden="true"></i><h2 id="epub-title">Import a book</h2></div>
+        <p class="hint card-intro">Turn one EPUB into a batch: one MP3 per chapter, with your own intro and outro.</p>
+        @if (!Studio.BatchEnabled)
+        {
+            <p class="hint" role="status">Batch audio is turned off on this voice engine (<code>TTS_BATCH_ENABLED=false</code>). Existing batches stay listed and downloadable in the Batches tab.</p>
+        }
+        else
+        {
+            <div class="upload batch-pickers">
+                <i class="bi bi-book" aria-hidden="true"></i>
+                <strong class="picker-title">Choose your book</strong>
+                @* The native input stays focusable but hidden; the label is the visible button. *@
+                <div class="picker-row single">
+                    <div class="picker">
+                        <InputFile id="epub-file" class="picker-input" OnChange="ChooseEpub" accept=".epub,application/epub+zip" disabled="@Locked" />
+                        <label for="epub-file" class="button secondary picker-button"><i class="bi bi-file-earmark-arrow-up" aria-hidden="true"></i> Choose .epub</label>
+                    </div>
+                </div>
+                <small>One DRM-free EPUB 2 or 3 with explicit chapters · up to 100 MiB</small>
+            </div>
+            <div role="status" aria-live="polite">
+                @if (parsing) { <p class="hint">Reading EPUB…</p> }
+            </div>
+            @if (parseError is not null)
+            {
+                <ul class="validation" role="alert"><li>@parseError</li></ul>
+            }
+            @if (Draft.Book is { } book)
+            {
+                var tracks = Builder.Build(ChapterTracks, Selection);
+                var messages = ValidationMessages(tracks);
+                var positions = tracks.Select((track, index) => (track, index)).ToDictionary(item => item.track.DisplayName, item => item.index + 1);
+                var voice = SelectedVoice;
+                <div class="book-summary">
+                    <div class="job-info">
+                        <strong title="@Draft.SourceLabel">@book.Title</strong>
+                        <small>@LanguageLabel(book.Language) · @book.Chapters.Count chapter@(book.Chapters.Count == 1 ? "" : "s") · @(ChapterTracks.Sum(track => (long)track.Characters).ToString("N0")) characters</small>
+                    </div>
+                    <button class="quiet" @onclick="ClearDraft" disabled="@Locked">Clear</button>
+                </div>
+                @if (Draft.Repaired) { <p class="hint">This EPUB’s packaging was repaired automatically.</p> }
+
+                <div class="label-row"><label for="epub-batch-name">Batch name</label><small>@Draft.Name.Length / 80</small></div>
+                <input id="epub-batch-name" @bind="Draft.Name" @bind:event="oninput" maxlength="80" disabled="@Locked" aria-describedby="epub-batch-name-hint" />
+                <small id="epub-batch-name-hint" class="hint">Each track becomes “@OutputBase 001.mp3”, “… 002.mp3”, and so on.</small>
+
+                <div class="label-row"><label for="epub-voice">Saved voice</label><button class="quiet" @onclick="Studio.Refresh">Refresh voices</button></div>
+                <select id="epub-voice" @bind="Draft.VoiceId" disabled="@(Locked || Studio.Voices.Count == 0)"><option value="">Choose a voice</option>@foreach (var option in Studio.Voices) { <option value="@option.VoiceId">@option.Name · @StudioSession.LanguageName(option.LanguageId)</option> }</select>
+                @if (Studio.Voices.Count == 0) { <p class="hint">No saved voices yet. <a href="/">Create your first voice</a> to begin.</p> }
+                else if (voice is not null && EpubBookRules.LanguageMismatch(book.Language, voice.LanguageId))
+                {
+                    <p class="hint language-warning"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i> This book is in @LanguageLabel(book.Language), but the voice reads @StudioSession.LanguageName(voice.LanguageId). Every chapter will be read in @StudioSession.LanguageName(voice.LanguageId).</p>
+                }
+                else { <p class="hint">Chapters are read, and their headings spoken, in the voice’s language.</p> }
+
+                <div class="label-row"><label for="epub-intro">Intro</label><small>@Draft.Intro.Length / 5,000</small></div>
+                <textarea id="epub-intro" @bind="Draft.Intro" @bind:event="oninput" maxlength="5000" rows="4" placeholder="e.g. the book’s title, author, and narrator" disabled="@Locked" aria-describedby="epub-intro-hint"></textarea>
+                <small id="epub-intro-hint" class="hint">Read before chapter 1 · leave empty to skip</small>
+                <div class="label-row"><label for="epub-outro">Outro</label><small>@Draft.Outro.Length / 5,000</small></div>
+                <textarea id="epub-outro" @bind="Draft.Outro" @bind:event="oninput" maxlength="5000" rows="4" placeholder="e.g. “The end. Thank you for listening.”" disabled="@Locked" aria-describedby="epub-outro-hint"></textarea>
+                <small id="epub-outro-hint" class="hint">Read after the last chapter · leave empty to skip</small>
+
+                <div class="label-row">
+                    <strong class="list-title">Narration order</strong>
+                    <span class="include-actions"><button class="quiet" @onclick="IncludeAll" disabled="@Locked">Include all</button><button class="quiet" @onclick="IncludeNone" disabled="@Locked">Include none</button></span>
+                </div>
+                <ol class="file-list chapter-list">
+                    @foreach (var track in tracks.Where(track => track.ChapterNumber is null && track.DisplayName == EpubBookRules.TrackFileName(BookTrackKind.Intro)))
+                    {
+                        @TextRow(track, positions[track.DisplayName], "Intro")
+                    }
+                    @foreach (var chapterTrack in ChapterTracks)
+                    {
+                        var number = chapterTrack.ChapterNumber!.Value;
+                        var included = !Draft.Excluded.Contains(number);
+                        var error = included ? EpubBookRules.TrackError(chapterTrack) : null;
+                        var open = Draft.Expanded.Contains(number);
+                        <li class="file-row chapter-row @(error is null ? null : "invalid") @(included ? null : "excluded")" @key="number">
+                            <span class="include-toggle"><input type="checkbox" checked="@included" aria-label="Include chapter @number" disabled="@Locked" @onchange="args => SetIncluded(number, args.Value is true)" /></span>
+                            <span class="track-number">@(included ? positions[chapterTrack.DisplayName].ToString("000") : "—")</span>
+                            <div class="job-info">
+                                <strong>Chapter @number</strong>
+                                <small>@chapterTrack.Characters.ToString("N0") characters · @(included ? $"→ {BatchRules.OutputName(OutputBase, positions[chapterTrack.DisplayName])}" : "not included")</small>
+                                @if (error is not null) { <small class="field-error">@error</small> }
+                            </div>
+                            <div class="job-actions">
+                                <button class="button secondary icon-button" aria-label="Preview chapter @number" title="@(open ? "Hide text" : "Preview text")" aria-expanded="@(open ? "true" : "false")" aria-controls="chapter-preview-@number" @onclick="() => TogglePreview(number)"><i class="bi @(open ? "bi-eye-slash" : "bi-eye")" aria-hidden="true"></i></button>
+                            </div>
+                            @if (open)
+                            {
+                                <div id="chapter-preview-@number" class="chapter-preview" tabindex="0" role="region" aria-label="Chapter @number text">
+                                    @if (NarrationLanguage is null) { <p class="hint">The spoken heading, such as “Chapter One.”, is added in the voice’s language once you choose a voice.</p> }
+                                    @foreach (var paragraph in Paragraphs(chapterTrack.Text)) { <p>@paragraph</p> }
+                                </div>
+                            }
+                        </li>
+                    }
+                    @foreach (var track in tracks.Where(track => track.ChapterNumber is null && track.DisplayName == EpubBookRules.TrackFileName(BookTrackKind.Outro)))
+                    {
+                        @TextRow(track, positions[track.DisplayName], "Outro")
+                    }
+                </ol>
+                @if (messages.Count > 0)
+                {
+                    <ul class="validation" role="alert">@foreach (var message in messages) { <li>@message</li> }</ul>
+                }
+                <button class="primary" @onclick="StartBookBatch" disabled="@(!CanStart(messages))"><i class="bi bi-play-circle" aria-hidden="true"></i> @(starting ? "Uploading…" : "Start book batch")</button>
+                @if (Studio.Health?.ModelReady != true) { <p class="hint">The voice engine is still loading. You can start when it is ready.</p> }
+            }
+        }
+    </section>
+    <div class="support-cards">
+        <section class="card"><div class="card-heading"><i class="bi bi-list-ol" aria-hidden="true"></i><h2>Narration order</h2></div><p>Your intro is read first, then each included chapter in book order, then your outro. Each becomes one MP3.</p></section>
+        <section class="card"><div class="card-heading"><i class="bi bi-book" aria-hidden="true"></i><h2>Supported books</h2></div><p>DRM-free EPUB 2 or 3 books whose chapters are marked as chapters, or numbered in the table of contents. Other books are rejected rather than guessed.</p><p class="hint">The EPUB is read once and never stored; only the chapter text you start is sent to the voice engine.</p></section>
+    </div>
+</div>
+@code {
+    [Parameter] public EventCallback<BatchSummary> OnCreated { get; set; }
+    private readonly CancellationTokenSource lifetime = new();
+    private bool parsing, starting;
+    private string? parseError;
+    // Chapter texts are normalized once per book and voice language, not on every keystroke.
+    private ParsedEpubBook? cachedBook;
+    private string? cachedLanguage;
+    private IReadOnlyList<BookTrack> cachedTracks = [];
+
+    private bool Locked => parsing || starting;
+    private Voice? SelectedVoice => Studio.Voices.FirstOrDefault(voice => voice.VoiceId == Draft.VoiceId);
+    private string? NarrationLanguage => SelectedVoice?.LanguageId is { } language && TtsTextNormalizer.IsSupported(language) ? language : null;
+    private string OutputBase => string.IsNullOrWhiteSpace(Draft.Name) ? "Name" : Draft.Name.Trim();
+    private BookSelection Selection => new(Draft.Intro, Draft.Outro, Draft.Excluded);
+
+    private IReadOnlyList<BookTrack> ChapterTracks
+    {
+        get
+        {
+            var language = NarrationLanguage;
+            if (!ReferenceEquals(Draft.Book, cachedBook) || language != cachedLanguage)
+            {
+                cachedBook = Draft.Book;
+                cachedLanguage = language;
+                cachedTracks = Draft.Book?.Chapters.Select(chapter => Builder.ChapterTrack(chapter, language)).ToList() ?? [];
+            }
+            return cachedTracks;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        if (Draft.VoiceId.Length == 0) Draft.VoiceId = Studio.SelectedVoice;
+    }
+
+    private List<string> ValidationMessages(IReadOnlyList<BookTrack> tracks) =>
+        new[] { BatchRules.NameError(Draft.Name), EpubBookRules.TextError("Intro", Draft.Intro), EpubBookRules.TextError("Outro", Draft.Outro) }
+            .OfType<string>().Concat(EpubBookRules.TrackErrors(tracks)).ToList();
+
+    private bool CanStart(IReadOnlyList<string> messages) => !Locked && Draft.Book is not null && messages.Count == 0
+        && SelectedVoice is not null && Studio.BatchEnabled && Studio.Health?.ModelReady == true;
+
+    private RenderFragment TextRow(BookTrack track, int position, string label) =>
+        @<li class="file-row chapter-row" @key="track.DisplayName">
+            <span class="include-toggle"></span>
+            <span class="track-number">@position.ToString("000")</span>
+            <div class="job-info">
+                <strong>@label</strong>
+                <small>@track.Characters.ToString("N0") characters · → @BatchRules.OutputName(OutputBase, position)</small>
+                @if (EpubBookRules.TrackError(track) is { } error) { <small class="field-error">@error</small> }
+            </div>
+            <div class="job-actions"></div>
+        </li>;
+
+    private static IEnumerable<string> Paragraphs(string text) =>
+        text.Split("\n\n", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static string LanguageLabel(string tag)
+    {
+        var name = StudioSession.LanguageName(EpubBookRules.PrimaryLanguage(tag));
+        return name == "Unknown language" ? tag : $"{name} ({tag})";
+    }
+
+    private async Task ChooseEpub(InputFileChangeEventArgs args)
+    {
+        parseError = null;
+        var file = args.File;
+        if (!file.Name.EndsWith(".epub", StringComparison.OrdinalIgnoreCase))
+        {
+            parseError = "Choose a .epub file.";
+            return;
+        }
+        parsing = true;
+        StateHasChanged();
+        try
+        {
+            // A failed import leaves the previous book, name, intro, outro, and selections untouched.
+            Draft.Load(await Import.ImportAsync(file, lifetime.Token), file.Name);
+        }
+        catch (EpubParseException exception) { parseError = exception.PublicMessage; }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        finally { parsing = false; }
+    }
+
+    private void SetIncluded(int number, bool included)
+    {
+        if (included) Draft.Excluded.Remove(number);
+        else Draft.Excluded.Add(number);
+    }
+
+    private void IncludeAll() => Draft.Excluded.Clear();
+    private void IncludeNone() => Draft.Excluded.UnionWith(Draft.Book?.Chapters.Select(chapter => chapter.Number) ?? []);
+
+    private void TogglePreview(int number)
+    {
+        if (!Draft.Expanded.Remove(number)) Draft.Expanded.Add(number);
+    }
+
+    private void ClearDraft()
+    {
+        Draft.Clear();
+        Draft.VoiceId = Studio.SelectedVoice;
+        parseError = null;
+    }
+
+    private async Task StartBookBatch()
+    {
+        var tracks = Builder.Build(ChapterTracks, Selection);
+        if (!CanStart(ValidationMessages(tracks))) return;
+        starting = true;
+        // Text is already validated and in memory, so no browser stream is involved.
+        var uploads = tracks.Select(track => new BatchUpload(track.DisplayName, new MemoryStream(Encoding.UTF8.GetBytes(track.Text), writable: false))).ToList();
+        try
+        {
+            if (await Studio.CreateBatch(Draft.Name.Trim(), Draft.VoiceId, uploads) is { } created)
+            {
+                Studio.SelectedVoice = Draft.VoiceId;
+                Draft.Clear();
+                await OnCreated.InvokeAsync(created);
+            }
+        }
+        finally
+        {
+            foreach (var upload in uploads) await upload.Content.DisposeAsync();
+            starting = false;
+        }
+    }
+
+    public override void Dispose()
+    {
+        lifetime.Cancel();
+        lifetime.Dispose();
+        base.Dispose();
+    }
+}

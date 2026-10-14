@@ -47,6 +47,24 @@ public sealed class TtsClientBatchTests
     }
 
     [Fact]
+    public async Task CreateBatchSendsInMemoryBookPartsInNarrationOrder()
+    {
+        var (client, handler) = Create(HttpStatusCode.Accepted);
+        BatchUpload[] files =
+        [
+            new("intro.txt", new MemoryStream("Read by me."u8.ToArray(), writable: false)),
+            new("chapter-003.txt", new MemoryStream("Capítulo Três.\n\nTexto.\n"u8.ToArray(), writable: false)),
+            new("outro.txt", new MemoryStream("The end."u8.ToArray(), writable: false))
+        ];
+
+        await client.CreateBatchAsync("Book", Guid.NewGuid().ToString(), files, CancellationToken.None);
+
+        Assert.Equal(["intro.txt", "chapter-003.txt", "outro.txt"], handler.FileNames);
+        Assert.True(handler.Body.IndexOf("Read by me.", StringComparison.Ordinal) < handler.Body.IndexOf("Texto.", StringComparison.Ordinal));
+        Assert.True(handler.Body.IndexOf("Texto.", StringComparison.Ordinal) < handler.Body.IndexOf("The end.", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ActionsUseCanonicalRoutes()
     {
         var id = Guid.NewGuid();
